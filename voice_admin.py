@@ -1224,7 +1224,7 @@ def build_ui():
                                 value="cut5", label="长文本切句方式")
                         t_btn = gr.Button("🔊 开始合成(克隆模式)", variant="primary")
                     with gr.Column():
-                        t_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True,
+                        t_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True, interactive=False,
                                            autoplay=True, show_download_button=True)
                         t_stats = gr.Markdown("克隆模式:使用 base 底模 + 所选音色的参考音频")
 
@@ -1274,6 +1274,44 @@ def build_ui():
 
         # ==================== 栏目二: 专属模式 ====================
         with gr.Tab("🟣 专属模式"):
+            with gr.Tab("🔊 流式试音"):
+                with gr.Row():
+                    with gr.Column():
+                        f_model = gr.Dropdown(
+                            choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                            value=active0 if active0 != "base" and any(
+                                m["id"] == active0 for m in list_models()) else "base",
+                            label="使用模型包(专属音色)") if False else gr.Dropdown(
+                            choices=[], value=None, label="使用模型包(专属音色)", interactive=True)
+                        f_text = gr.Textbox(
+                            label="要合成的文本",
+                            value="你好,这是专属音色的流式试音,自动使用模型捆绑的参考音频。", lines=3)
+                        with gr.Row():
+                            f_lang = gr.Dropdown(choices=LANG_FULL, value="zh", label="文本语言")
+                            f_mode = gr.Radio(choices=[("3 = 极速首包", 3), ("2 = 质量优先", 2)],
+                                              value=3, type="value", label="流式模式")
+                        f_speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="语速")
+                        with gr.Accordion("⚙️ 进阶参数(采样/复现/长文本)", open=False):
+                            with gr.Row():
+                                b_seed = gr.Number(value=-1, precision=0,
+                                                   label="随机种子(-1=随机,固定值可复现)")
+                                b_rep = gr.Slider(1.0, 3.0, value=1.35, step=0.05,
+                                                  label="重复惩罚(复读/卡字时调大)")
+                            with gr.Row():
+                                b_topk = gr.Slider(1, 100, value=15, step=1, label="Top-K(越小越稳)")
+                                b_topp = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Top-P")
+                                b_temp = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="温度(高=更有情感)")
+                            b_cut = gr.Dropdown(
+                                choices=[("按标点切(推荐长文)", "cut5"), ("不切,整句直出", "cut0"),
+                                         ("按中文句号切", "cut3"), ("按英文句号切", "cut4"),
+                                         ("凑四句一切", "cut1"), ("凑50字一切", "cut2")],
+                                value="cut5", label="长文本切句方式")
+                        f_btn = gr.Button("🔊 开始合成(专属模式)", variant="primary")
+                    with gr.Column():
+                        f_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True, interactive=False,
+                                           autoplay=True, show_download_button=True)
+                        f_stats = gr.Markdown("专属模式:自动切换到所选模型,并使用其捆绑的参考音频")
+
             with gr.Tab("➕ 添加专属音色(模型包)"):
                 with gr.Row():
                     with gr.Column():
@@ -1313,44 +1351,6 @@ def build_ui():
                     m_act_btn = gr.Button("🚀 启用选中模型", variant="primary")
                     m_del_btn = gr.Button("🗑️ 删除选中注册", variant="stop")
                 m_out = gr.Markdown("")
-
-            with gr.Tab("🔊 流式试音"):
-                with gr.Row():
-                    with gr.Column():
-                        f_model = gr.Dropdown(
-                            choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                            value=active0 if active0 != "base" and any(
-                                m["id"] == active0 for m in list_models()) else "base",
-                            label="使用模型包(专属音色)") if False else gr.Dropdown(
-                            choices=[], value=None, label="使用模型包(专属音色)", interactive=True)
-                        f_text = gr.Textbox(
-                            label="要合成的文本",
-                            value="你好,这是专属音色的流式试音,自动使用模型捆绑的参考音频。", lines=3)
-                        with gr.Row():
-                            f_lang = gr.Dropdown(choices=LANG_FULL, value="zh", label="文本语言")
-                            f_mode = gr.Radio(choices=[("3 = 极速首包", 3), ("2 = 质量优先", 2)],
-                                              value=3, type="value", label="流式模式")
-                        f_speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="语速")
-                        with gr.Accordion("⚙️ 进阶参数(采样/复现/长文本)", open=False):
-                            with gr.Row():
-                                b_seed = gr.Number(value=-1, precision=0,
-                                                   label="随机种子(-1=随机,固定值可复现)")
-                                b_rep = gr.Slider(1.0, 3.0, value=1.35, step=0.05,
-                                                  label="重复惩罚(复读/卡字时调大)")
-                            with gr.Row():
-                                b_topk = gr.Slider(1, 100, value=15, step=1, label="Top-K(越小越稳)")
-                                b_topp = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Top-P")
-                                b_temp = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="温度(高=更有情感)")
-                            b_cut = gr.Dropdown(
-                                choices=[("按标点切(推荐长文)", "cut5"), ("不切,整句直出", "cut0"),
-                                         ("按中文句号切", "cut3"), ("按英文句号切", "cut4"),
-                                         ("凑四句一切", "cut1"), ("凑50字一切", "cut2")],
-                                value="cut5", label="长文本切句方式")
-                        f_btn = gr.Button("🔊 开始合成(专属模式)", variant="primary")
-                    with gr.Column():
-                        f_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True,
-                                           autoplay=True, show_download_button=True)
-                        f_stats = gr.Markdown("专属模式:自动切换到所选模型,并使用其捆绑的参考音频")
 
         # ==================== 通用: 备份 / 调用说明 ====================
         with gr.Tab("💾 备份 / 恢复"):
