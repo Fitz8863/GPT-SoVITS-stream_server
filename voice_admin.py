@@ -16,6 +16,7 @@ import threading
 import time
 import zipfile
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 
 import gradio as gr
@@ -143,6 +144,26 @@ def _register_model(mid, gpt_path, sovits_path, note):
     return _register_model_files(mid, gpt_path, sovits_path, note)
 
 
+def _load_weight_file(path):
+    """加载权重文件, 自动补齐缺失的 2 字节 PK 头(GPT-SoVITS 分发约定)。
+    返回 (dict 含 weight 键, None) 或 (None, 错误信息)。"""
+    import torch
+    with open(path, "rb") as f:
+        meta = f.read(2)
+        rest = f.read()
+    try:
+        if meta == b"PK":
+            ck = torch.load(BytesIO(meta + rest), map_location="cpu", weights_only=False)
+        else:
+            ck = torch.load(BytesIO(b"PK" + meta + rest), map_location="cpu", weights_only=False)
+    except Exception as e:
+        return None, f"文件损坏或不是有效的 torch 权重: {type(e).__name__}: {e}"
+    w = ck.get("weight") if isinstance(ck, dict) else None
+    if not isinstance(w, dict) or not w:
+        return None, "缺少 weight 键, 不是官方训练导出的权重文件"
+    return ck, None
+
+
 def _register_model_files(mid, gpt_src, sovits_src, note, ref_src=None,
                           prompt_text=None, prompt_lang=None, re_asr=True):
     """从(上传的)文件注册微调模型: 模型对 + 捆绑参考音频 → fine_tuned_models/<id>/ 并入库。"""
@@ -157,6 +178,21 @@ def _register_model_files(mid, gpt_src, sovits_src, note, ref_src=None,
             return False, f"{kind} 权重文件过小(<1MB),不像有效权重"
         if Path(p).suffix.lower() not in allowed:
             return False, f"{kind} 权重格式应为 {'/'.join(allowed)},收到 {Path(p).suffix}"
+    # 权重内容校验: 损坏文件/槽位放错文件在此拦截, 而不是等切换时才失败
+    ck, werr = _load_weight_file(gpt_src)
+    if werr:
+        return False, f"GPT 权重文件无效: {werr}"
+    gk = list(ck["weight"].keys())
+    if not any(k.startswith(("model.ar_text_embedding", "model.bert_proj", "model.h.")) for k in gk):
+        hint = "看起来是 SoVITS 权重(检测到 enc_p.* 键)" if any(k.startswith("enc_p.") for k in gk) \
+            else "结构无法识别"
+        return False, f"GPT 槽位文件错误: {hint}, 请上传 GPT_weights/ 下的 GPT_*.ckpt"
+    ck2, werr2 = _load_weight_file(sovits_src)
+    if werr2:
+        return False, f"SoVITS 权重文件无效: {werr2}"
+    sk = list(ck2["weight"].keys())
+    if not any(k.startswith("enc_p.") for k in sk):
+        return False, "SoVITS 槽位文件错误: 请上传 SoVITS_weights/ 下的 SoVITS_*.pth"
     if not ref_src or not Path(ref_src).exists():
         return False, "参考音频缺失(要求 3~10 秒, 与模型说话人一致)"
     rdur = sf.info(str(ref_src)).duration
