@@ -1151,6 +1151,11 @@ def ui_m_del(mid):
     return f"已删除注册 '{mid}'(权重文件保留)", ui_m_list()
 
 
+def _m_pick_update():
+    """模型包下拉框的 choices 刷新。"""
+    return gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"])
+
+
 def ui_m_pick_full(mid):
     reg = load_reg()
     m = reg["models"].get(mid)
