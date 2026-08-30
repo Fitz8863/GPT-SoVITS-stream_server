@@ -1,9 +1,7 @@
 {
   "settings": {
     "default_voice": "",
-    "default_streaming_mode": 3,
-    "default_speed": 1.0,
-    "default_text_lang": "zh"
+    "active_model": "base"
   },
   "voices": {
     "demo_female_zh": {

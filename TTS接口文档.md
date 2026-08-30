@@ -13,7 +13,7 @@
 
 | 服务 | 地址(Tailscale) | 说明 |
 |---|---|---|
-| **音色管理后台 + 按名调用 ⭐推荐** | `http://100.95.19.17:9873` | 设备接这个:`/tts` 支持按音色名调用(含推理进阶参数);`/ui` 管理界面(流式试音/音色注册/默认参数) |
+| **音色管理后台 + 按名调用 ⭐推荐** | `http://100.95.19.17:9873` | 设备接这个:`/tts` 支持按音色名调用(含推理进阶参数);`/ui` 管理界面(流式试音/音色注册) |
 | GPT-SoVITS api_v2 直连 | `http://100.95.19.17:9880` | 每次请求带参考音频路径(下文完整文档) |
 | 流式测试 WebUI | `http://100.95.19.17:9872` | 网页试听测试 |
 
@@ -37,7 +37,7 @@
 | **9873** `/models` 系列 | GET / POST / DELETE / POST activate | 微调模型注册表与热切换(见「微调模型管理」) |
 | **9873** `/models/upload` | POST(multipart) | **上传专属音色包**注册(gpt_file + sovits_file + ref_file + id, 转写可自动ASR) |
 | **9873** `/voices/{id}` PATCH | 可含 `model_id` | **音色绑定微调模型**:调用该音色自动切换模型,未绑定自动用 base |
-| **9873** `/ui` | GET | 管理界面(**流式试音**、注册/试听/删除音色、默认参数设置) |
+| **9873** `/ui` | GET | 管理界面(**流式试音**、注册/编辑/试听/删除音色、微调模型、备份恢复) |
 | **9873** `/asr` | POST | 参考音频自动转写(SenseVoiceSmall,zh/en/ja/ko/yue 自动检测语言) |
 | **9873** `/v1/audio/speech` | POST | **OpenAI TTS 兼容端点**(现成客户端即插即用,mp3/wav/flac/opus/aac/pcm) |
 | **9873** `/voices/backup` · `/voices/restore` | GET / POST | 音色库一键备份(zip)/ 恢复 |
@@ -61,17 +61,17 @@ curl -X POST http://100.95.19.17:9873/tts \
   -o out.wav
 ```
 
-- `voice` 缺省时用管理界面设置的默认音色;`text_lang`/`streaming_mode`/`speed` 等缺省用默认参数
+- `voice` 缺省时用注册表 `settings.default_voice`(若设置);`text_lang`/`streaming_mode`/`speed` 缺省为内置值
 - 兼容透传:带 `ref_audio_path` 的完整 9880 请求体发到 9873 也照常工作
 
-**按名调用可用参数**(均可选,缺省用「默认参数」页保存的值):
+**按名调用可用参数**(均可选;缺省值为内置常量:streaming_mode=3、speed=1.0、text_lang=zh):
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| `voice` | 默认音色 | 注册表中的音色 ID |
+| `voice` | 注册表 default_voice(若设置) | 注册表中的音色 ID |
 | `text` **必填** | — | 要合成的文本 |
-| `text_lang` | 默认文本语言(zh) | 11 种语言模式任一 |
-| `streaming_mode` | 默认模式(3) | 整数 2/3 才是真流式 |
+| `text_lang` | zh | 11 种语言模式任一 |
+| `streaming_mode` | 3 | 整数 2/3 才是真流式 |
 | `speed` | 1.0 | 语速 0.5~2.0 |
 | `media_type` | wav | wav / raw / ogg / aac |
 | `min_chunk_length` | 16 | 流式切块粒度(勿动) |
@@ -334,7 +334,7 @@ curl "http://100.95.19.17:9880/set_sovits_weights?weights_path=GPT_SoVITS/logs/x
 ### 9873 音色注册表 API(程序化管理音色)
 
 ```bash
-# 列出全部音色 + 默认参数
+# 列出全部音色
 curl http://100.95.19.17:9873/voices
 
 # 注册音色(音频须已在服务端磁盘上;网页上传请用管理界面 /ui)

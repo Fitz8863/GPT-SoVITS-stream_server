@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """音色管理后台 + 按名调用代理(端口 9873)
 
-- /ui      管理界面:音色注册/试听/删除、默认参数设置
+- /ui      管理界面:流式试音、音色注册/编辑/删除、微调模型、备份恢复
 - /tts     按名调用代理:{"voice":"音色ID","text":"..."} → 解析注册表 → 转发 api_v2
            兼容透传:带 ref_audio_path 的完整请求体原样转发
 - /voices  注册表 API:GET 列表 / POST 注册(服务端本地路径)/ DELETE /voices/{id}
@@ -352,7 +352,7 @@ async def openai_speech(request: Request):
         return JSONResponse(status_code=500, content={"message": f"模型自动切换失败: {mmsg}"})
     payload = {
         "text": text,
-        "text_lang": body.get("text_lang") or st.get("default_text_lang", "zh"),
+        "text_lang": body.get("text_lang") or "zh",
         "ref_audio_path": ref["file"],
         "prompt_text": ref.get("prompt_text", ""),
         "prompt_lang": ref.get("prompt_lang", "zh"),
@@ -516,13 +516,13 @@ async def tts_proxy(request: Request):
             return JSONResponse(status_code=500, content={"message": f"模型自动切换失败: {mmsg}"})
         payload = {
             "text": body["text"],
-            "text_lang": body.get("text_lang") or st.get("default_text_lang", "zh"),
+            "text_lang": body.get("text_lang") or "zh",
             "ref_audio_path": ref["file"],
             "prompt_text": ref.get("prompt_text", ""),
             "prompt_lang": ref.get("prompt_lang", "zh"),
             "media_type": body.get("media_type", "wav"),
-            "streaming_mode": int(body.get("streaming_mode", st.get("default_streaming_mode", 3))),
-            "speed_factor": float(body.get("speed", st.get("default_speed", 1.0))),
+            "streaming_mode": int(body.get("streaming_mode", 3)),
+            "speed_factor": float(body.get("speed", 1.0)),
             "min_chunk_length": int(body.get("min_chunk_length", 16)),
         }
         if body.get("text_split_method"):
@@ -667,7 +667,7 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
         raise gr.Error(f"模型自动切换失败: {mmsg}")
     payload = {
         "text": text,
-        "text_lang": text_lang or st.get("default_text_lang", "zh"),
+        "text_lang": text_lang or "zh",
         "ref_audio_path": ref["file"],
         "prompt_text": ref.get("prompt_text", ""),
         "prompt_lang": ref.get("prompt_lang", "zh"),
@@ -769,7 +769,7 @@ curl -X POST http://100.95.19.17:9873/tts \\
   -o out.wav
 ```
 
-**可用参数**(全部可选,缺省用「⚙️ 默认参数」页保存的值):
+**可用参数**(全部可选,缺省值为内置:streaming_mode=3、speed=1.0、text_lang=zh;`voice` 缺省可用注册表 settings.default_voice 指定,未指定则必填):
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
@@ -811,7 +811,7 @@ curl -X POST http://100.95.19.17:9873/v1/audio/speech \\
 ## 3️⃣ 音色管理 API
 
 ```bash
-curl http://100.95.19.17:9873/voices                              # 列出全部 + 默认参数
+curl http://100.95.19.17:9873/voices                              # 列出全部音色
 curl -X POST http://100.95.19.17:9873/voices -H "Content-Type: application/json" \\
   -d '{"voice_id":"xm","file_path":"/home/hwj/AI/tts-server/voices/xm.wav",
        "prompt_text":"转写","prompt_lang":"zh"}'                    # 注册(音频须在服务端)
@@ -1005,18 +1005,6 @@ def ui_delete(voice_id):
     return f"已删除 '{voice_id}'(文件保留)", ui_list()
 
 
-def ui_save_settings(default_voice, default_streaming_mode, default_speed, default_text_lang):
-    reg = load_reg()
-    reg["settings"].update({
-        "default_voice": default_voice or "",
-        "default_streaming_mode": int(default_streaming_mode),
-        "default_speed": float(default_speed),
-        "default_text_lang": default_text_lang,
-    })
-    save_reg(reg)
-    return f"已保存默认参数: {json.dumps(reg['settings'], ensure_ascii=False)}"
-
-
 def ui_backup():
     zpath = _make_backup()
     size = Path(zpath).stat().st_size / 1024
@@ -1185,23 +1173,6 @@ def build_ui():
             edit_btn.click(ui_save_edit, [pick, e_newid, e_prompt, e_lang, e_note, e_model],
                            [edit_out, lst, pick, t_voice])
             del_btn.click(ui_delete, [pick], [del_out, lst])
-
-        with gr.Tab("⚙️ 默认参数(按名调用时生效)"):
-            st = load_reg()["settings"]
-            _ids = sorted(load_reg()["voices"].keys())
-            _dv = st.get("default_voice")
-            d_voice = gr.Dropdown(choices=_ids,
-                                  value=_dv if _dv in _ids else None,
-                                  label="默认音色(voice 缺省时使用)")
-            d_mode = gr.Radio(choices=[("3 = 极速首包(推荐)", 3), ("2 = 质量优先", 2)],
-                              value=st.get("default_streaming_mode", 3), type="value",
-                              label="默认流式模式")
-            d_speed = gr.Slider(0.5, 2.0, value=st.get("default_speed", 1.0), step=0.05, label="默认语速")
-            d_lang = gr.Dropdown(choices=LANG_FULL,
-                                 value=st.get("default_text_lang", "zh"), label="默认文本语言")
-            save_btn = gr.Button("💾 保存默认参数", variant="primary")
-            st_out = gr.Markdown("")
-            save_btn.click(ui_save_settings, [d_voice, d_mode, d_speed, d_lang], [st_out])
 
         with gr.Tab("🧠 微调模型"):
             gr.Markdown(
