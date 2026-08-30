@@ -147,16 +147,17 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 ## 目录结构
 
 ```
-/home/hwj/AI/tts-server/GPT-SoVITS/        # 主服务(含 pretrained_models 4.6G、G2PW、sv 等)
-/home/hwj/AI/tts-server/start.sh
-/home/hwj/AI/tts-server/stop.sh
-/home/hwj/AI/tts-server/api_v2.log         # 服务日志
+/home/hwj/AI/tts-server/GPT-SoVITS/        # 官方引擎(零改动, 含 pretrained_models 4.6G/G2PW/sv)
+/home/hwj/AI/tts-server/start.sh / stop.sh / selftest.sh   # 一键启停 / 13 项回归自检
+/home/hwj/AI/tts-server/voice_admin.py     # 管理后台+按名调用+OpenAI端点+ASR+微调模型+GPU keeper
+/home/hwj/AI/tts-server/webui_stream.py    # 流式测试网页
+/home/hwj/AI/tts-server/keepalive.sh(.pid/.log)  # 心跳+看门狗+日志轮转
+/home/hwj/AI/tts-server/api_v2.log         # 服务日志(超10MB自动切.1)
 /home/hwj/AI/tts-server/bench/             # benchmark_tts.py / stream_play.py / bench_voxcpm.py / 结果
-/home/hwj/AI/tts-server/VoxCPM/            # 对比方案源码
-/home/hwj/AI/tts-server/models/VoxCPM1.5/  # VoxCPM 权重 (~2G)
-/home/hwj/AI/tts-server/pipcache/          # pip 共享缓存 (3.7G, 可删)
-/home/hwj/AI/tts-server/tts-server/voices/demo_female_zh.wav  # 测试参考音频(3.48s 中文女声)
-/home/hwj/AI/tts-server/TTS部署说明.md      # 本文档
+/home/hwj/AI/tts-server/voices/            # 音色库: registry.json + 音频(不入库) + backups/(留10份)
+/home/hwj/AI/tts-server/fine_tuned_models/ # 上传的微调模型专属音色包(权重+参考音频)
+/home/hwj/AI/tts-server/VoxCPM/ models/VoxCPM1.5/ pipcache/   # 备选方案与缓存
+/home/hwj/AI/tts-server/TTS接口文档.md  TTS部署说明.md  README.md   # 文档
 ```
 
 ## 已知事项 / 后续
