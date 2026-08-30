@@ -1058,7 +1058,9 @@ def ui_m_activate(mid):
     ok, msg = activate_model(mid)
     if not ok:
         raise gr.Error(msg)
-    return msg + "(请搭配该音色对应的参考音频使用)", ui_m_list(), ui_active_model()
+    umodel_upd = gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                           value=mid)
+    return (msg + "(试音页已自动切换到该模型)", ui_m_list(), ui_active_model(), umodel_upd)
 
 
 def ui_m_del(mid):
@@ -1233,7 +1235,7 @@ def build_ui():
             m_reg_btn.click(ui_m_register,
                             [m_id, m_gpt, m_sovits, m_ref, m_note, m_ptext, m_lang, m_asr],
                             [m_out, m_tbl, m_pick])
-            m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, t_model])
+            m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, t_model, t_umodel])
             m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
 
         with gr.Tab("💾 备份 / 恢复"):
@@ -1254,13 +1256,17 @@ def build_ui():
 
         with gr.Tab("📖 调用说明"):
             gr.Markdown(CALL_DOC)
-        demo.load(lambda: (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
-                           ui_m_list(), gr.update(choices=[m["id"] for m in list_models()]),
-                           ui_active_model(),
-                           gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                                     value="base"),
-                           gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                                     value="base")),
+        def _load_all():
+            reg = load_reg()
+            active = reg["settings"].get("active_model", "base")
+            mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
+            return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
+                    ui_m_list(), gr.update(choices=mids),
+                    ui_active_model(),
+                    gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                              value="base"),
+                    gr.update(choices=mids, value=active))
+        demo.load(_load_all,
                   None, [lst, pick, t_voice, m_tbl, m_pick, t_model, e_model, t_umodel])
     return demo
 
