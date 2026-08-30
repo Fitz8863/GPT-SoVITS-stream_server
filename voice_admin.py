@@ -1333,11 +1333,12 @@ def build_ui():
                         m_note = gr.Textbox(label="备注", lines=1)
                 with gr.Row():
                     with gr.Column():
-                        m_ptext = gr.Textbox(label="参考音频转写(留空=自动ASR识别)", lines=2)
+                        m_ptext = gr.Textbox(label="参考音频转写(留空=自动ASR识别,可随时点右侧按钮重新识别)", lines=2)
                         m_lang = gr.Dropdown(choices=LANG_FULL, value="zh",
                                              label="参考音频语言(自动识别时忽略)")
+                        m_asr_btn = gr.Button("🎙️ 重新识别转写(从捆绑参考音频)")
                     with gr.Column():
-                        m_asr = gr.Checkbox(value=True, label="自动ASR识别转写")
+                        m_asr = gr.Checkbox(value=True, label="注册时自动ASR识别转写")
                 m_reg_btn = gr.Button("📥 注册专属音色包", variant="primary")
                 m_out = gr.Markdown("")
 
@@ -1400,6 +1401,7 @@ def build_ui():
         m_reg_btn.click(ui_m_register,
                         [m_id, m_gpt, m_sovits, m_ref, m_note, m_ptext, m_lang, m_asr],
                         [m_out, m_tbl, m_pick, f_model])
+        m_asr_btn.click(ui_asr_for_model, [m_ref], [m_ptext, m_lang, m_out])
         m_ref.upload(ui_asr_for_model, [m_ref], [m_ptext, m_lang, m_out])
         m_refresh.click(lambda: (ui_m_list(), _m_pick_update()), None, [m_tbl, m_pick])
         m_pick.change(ui_m_pick_full, [m_pick], [m_play, m_eprompt, m_elang, m_enote])
