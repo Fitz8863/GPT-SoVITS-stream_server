@@ -153,7 +153,7 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 /home/hwj/AI/tts-server/webui_stream.py    # 流式测试网页
 /home/hwj/AI/tts-server/keepalive.sh(.pid/.log)  # 心跳+看门狗+日志轮转
 /home/hwj/AI/tts-server/api_v2.log         # 服务日志(超10MB自动切.1)
-/home/hwj/AI/tts-server/bench/             # benchmark_tts.py / stream_play.py / bench_voxcpm.py / 结果
+/home/hwj/AI/tts-server/bench/             # benchmark_tts.py / stream_play.py / 测试结果
 /home/hwj/AI/tts-server/voices/            # 音色库: registry.json + 音频(不入库) + backups/(留10份)
 /home/hwj/AI/tts-server/fine_tuned_models/ # 上传的微调模型专属音色包(权重+参考音频)
 /home/hwj/AI/tts-server/VoxCPM/ models/VoxCPM1.5/ pipcache/   # 备选方案与缓存

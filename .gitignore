@@ -1,8 +1,5 @@
-# 官方仓库与模型权重(另行克隆/下载, 见 README 部署指南)
+# 官方仓库(另行克隆, 见 README 部署指南)
 GPT-SoVITS/
-VoxCPM/
-models/
-pipcache/
 downloads/
 
 # 运行时产物
@@ -22,4 +19,6 @@ bench/*.wav
 
 # 内置公开示例音频(CosyVoice 采样, 供新部署测试)
 !voices/demo_female_zh.wav
+
+# 微调模型权重(超大文件, 不入库)
 fine_tuned_models/

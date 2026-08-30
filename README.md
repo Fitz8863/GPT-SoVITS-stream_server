@@ -103,7 +103,7 @@ bash stop.sh       # 一键停止
 ├── voice_admin.py              # 管理后台 + 按名调用代理 + OpenAI 端点 + ASR + 微调模型 + GPU keeper
 ├── webui_stream.py             # 流式测试网页
 ├── keepalive.sh                # 心跳 + 看门狗自动拉起 + 日志轮转
-├── bench/                      # 基准与客户端示例(benchmark_tts / stream_play / bench_voxcpm)
+├── bench/                      # 基准脚本与客户端示例(benchmark_tts / stream_play)
 ├── voices/                     # 音色库(registry.json + 音频, 不入库; 见 registry.example.json)
 ├── fine_tuned_models/          # 上传的微调模型专属音色包(权重+参考音频, 不入库)
 ├── TTS接口文档.md               # 全参数/流式格式/多语言客户端示例/FAQ
