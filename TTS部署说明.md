@@ -37,7 +37,6 @@
 
 ```bash
 conda activate gpt-sovits    # GPT-SoVITS 主环境 (python 3.10, torch 2.7.0+cu126)
-conda activate voxcpm        # VoxCPM 对比环境
 ```
 
 > 配置了 tuna conda 镜像(~/.condarc);原 anaconda 安装器自带的
@@ -129,11 +128,12 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 - 首包 **~0.15s**:发出请求后 150ms 即可开始播放,满足"立马出声"
 - RTF 0.13~0.21:远优于 RTF<0.5;边播边生成不会断流(生成速度≈播放速度 5~8 倍)
 - 服务冷启动后首次请求需 10s 级初始化——start.sh 已内置 zh/en/ja 三语自动预热,启动完成即为热态
-- 音频文件在 `/home/hwj/AI/tts-server/bench/bench_out/`,VoxCPM 的在 `bench_out_voxcpm/`,可回听对比
+- 音频样本在 `/home/hwj/AI/tts-server/bench/bench_out/`(可回听对比)
 
-## VoxCPM 对比数据(同卡,标准 PyTorch 后端,inference_timesteps=10)
+## 选型记录:VoxCPM 1.5 对比数据(历史存档,VoxCPM 相关文件与环境已删除)
 
-复现:`conda activate voxcpm && python /home/hwj/AI/tts-server/bench/bench_voxcpm.py --model /home/hwj/AI/tts-server/models/VoxCPM1.5`
+以下为当时实测数据,保留作为选型依据(VoxCPM 标准后端在 4060 上 RTF 超标,故未采用):
+如需复现需重新安装 VoxCPM 与其环境。`
 
 | case | 首包 TTFB | 生成完 | RTF |
 |---|---|---|---|
@@ -153,10 +153,9 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 /home/hwj/AI/tts-server/webui_stream.py    # 流式测试网页
 /home/hwj/AI/tts-server/keepalive.sh(.pid/.log)  # 心跳+看门狗+日志轮转
 /home/hwj/AI/tts-server/api_v2.log         # 服务日志(超10MB自动切.1)
-/home/hwj/AI/tts-server/bench/             # benchmark_tts.py / stream_play.py / 测试结果
+/home/hwj/AI/tts-server/bench/             # benchmark_tts.py / stream_play.py
 /home/hwj/AI/tts-server/voices/            # 音色库: registry.json + 音频(不入库) + backups/(留10份)
 /home/hwj/AI/tts-server/fine_tuned_models/ # 上传的微调模型专属音色包(权重+参考音频)
-/home/hwj/AI/tts-server/VoxCPM/ models/VoxCPM1.5/ pipcache/   # 备选方案与缓存
 /home/hwj/AI/tts-server/TTS接口文档.md  TTS部署说明.md  README.md   # 文档
 ```
 

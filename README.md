@@ -76,7 +76,7 @@ pip install "fastapi==0.115.6" "starlette==0.41.3" sounddevice
 
 ```bash
 bash start.sh      # 拉起 9880(API)+ 9872(测试页)+ 9873(管理后台),自动三语预热
-bash selftest.sh   # 12 项端点回归自检
+bash selftest.sh   # 13 项端点回归自检
 bash stop.sh       # 一键停止
 ```
 
@@ -99,7 +99,7 @@ bash stop.sh       # 一键停止
 
 ```
 ├── start.sh / stop.sh          # 一键启停(幂等, 自动预热)
-├── selftest.sh                 # 12 项端点回归自检
+├── selftest.sh                 # 13 项端点回归自检
 ├── voice_admin.py              # 管理后台 + 按名调用代理 + OpenAI 端点 + ASR + 微调模型 + GPU keeper
 ├── webui_stream.py             # 流式测试网页
 ├── keepalive.sh                # 心跳 + 看门狗自动拉起 + 日志轮转
