@@ -16,6 +16,7 @@ wait_port() {  # wait_port 端口 超时次数
 
 echo "== TTS 服务启动 =="
 rm -f "$BASE/.manually_stopped"   # 手动启动后解除看门狗抑制
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True   # 降低热切换模型时的显存碎片
 
 # 1) 核心合成 API
 if port_up 9880; then

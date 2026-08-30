@@ -255,12 +255,6 @@ def _ensure_active_model(desired):
     return activate_model(desired)
 
 
-def _ensure_model_for_voice(v):
-    """按音色绑定的模型自动路由: 绑定微调模型→热切换之; 未绑定→用 base。
-    返回 (ok, msg)。频繁在两类音色间交替会触发反复热切换(每次数秒)。"""
-    return _ensure_active_model((v or {}).get("model_id") or "base")
-
-
 def activate_model(mid):
     """调 api_v2 官方热切换端点启用模型对, 成功后记录到注册表(重启自动恢复)。"""
     reg = load_reg()
@@ -445,7 +439,12 @@ def _make_backup() -> str:
         for vid, v in reg["voices"].items():
             f = v.get("file", "")
             if f and Path(f).exists():
-                z.write(f, arcname=f"{vid}.wav")
+                z.write(f, arcname=f"voices/{vid}.wav")
+        for mid, m in reg["models"].items():
+            for key in ("gpt_path", "sovits_path", "ref_audio"):
+                f = m.get(key, "")
+                if f and Path(f).exists():
+                    z.write(f, arcname=f"fine_tuned_models/{mid}/{Path(f).name}")
         z.writestr("registry.json", json.dumps(reg, ensure_ascii=False, indent=2))
     # 备份保留策略: 只留最近 10 份
     zlist = sorted(bdir.glob("voices_backup_*.zip"))
@@ -481,6 +480,22 @@ def _restore_zip(zpath, overwrite=False):
             "created_at": entry.get("created_at", str(date.today())),
         }
         restored.append(vid)
+    # 恢复专属音色包(模型权重 + 捆绑参考音频 + 注册条目)
+    for mid, m in backup_reg.get("models", {}).items():
+        if mid in reg["models"] and not overwrite:
+            skipped.append(mid)
+            continue
+        for key in ("gpt_path", "sovits_path", "ref_audio"):
+            arc = f"fine_tuned_models/{mid}/{Path(m.get(key, 'x')).name}"
+            if arc in names:
+                dest = BASE_DIR / arc
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(arc) as fsrc, open(dest, "wb") as fdst:
+                    shutil.copyfileobj(fsrc, fdst)
+        entry = dict(m)
+        entry["note"] = (m.get("note", "") + " (恢复自备份)").strip()
+        reg["models"][mid] = entry
+        restored.append(mid)
     save_reg(reg)
     return restored, skipped
 
@@ -588,14 +603,13 @@ _asr_lock = threading.RLock()
 
 
 def get_asr_model():
-    """懒加载 SenseVoiceSmall(首次调用自动从 ModelScope 下载, 之后常驻)。"""
+    """懒加载 SenseVoiceSmall(首次调用自动从 ModelScope 下载, 之后常驻)。
+    固定用 CPU: 为 TTS 推理/热切换让出全部显存; 10s 音频识别仅需数秒。"""
     global _asr_model
     with _asr_lock:
         if _asr_model is None:
-            import torch
             from funasr import AutoModel
-            dev = "cuda:0" if torch.cuda.is_available() else "cpu"
-            _asr_model = AutoModel(model="iic/SenseVoiceSmall", device=dev,
+            _asr_model = AutoModel(model="iic/SenseVoiceSmall", device="cpu",
                                    disable_update=True, disable_pbar=True)
         return _asr_model
 
@@ -854,6 +868,13 @@ curl -X POST http://100.95.19.17:9873/voices -H "Content-Type: application/json"
 curl -X PATCH http://100.95.19.17:9873/voices/xm -H "Content-Type: application/json" \\
   -d '{"voice_id":"xm2","note":"新备注"}'                           # 修改:改ID/转写/语言/备注
 curl -X DELETE http://100.95.19.17:9873/voices/xm2                 # 删除(音频保留)
+
+# 专属音色包(微调模型): 上传三件套 / 专属模式调用 / 启用 / 切回底模
+curl -X POST http://100.95.19.17:9873/models/upload -F "id=anke_ft" \
+  -F "gpt_file=@GPT-anke.pth" -F "sovits_file=@SoVITS-anke.pth" -F "ref_file=@anke_ref.wav"
+curl -X POST http://100.95.19.17:9873/tts -d '{"model":"anke_ft","text":"..."}'  # 专属模式
+curl -X POST http://100.95.19.17:9873/models/anke_ft/activate     # 手动启用(含预热)
+curl -X POST http://100.95.19.17:9873/models/base/activate        # 切回底模
 curl -X POST http://100.95.19.17:9873/asr \\
   -d '{"file_path":"/home/hwj/AI/tts-server/voices/x.wav"}'        # 自动转写+检测语言
 curl http://100.95.19.17:9873/voices/backup -o backup.zip          # 备份(全部音色+注册表)
@@ -933,8 +954,7 @@ def ui_pick_full(voice_id):
         return None, "", gr.update(), "", "", gr.update(value="base")
     return (v.get("file"), v.get("prompt_text", ""),
             gr.update(value=v.get("prompt_lang", "zh")),
-            voice_id, v.get("note", ""),
-            gr.update(value=v.get("model_id", "base")))
+            voice_id, v.get("note", ""))
 
 
 def _edit_voice(voice_id, new_id, prompt_text, prompt_lang, note, model_id=None):
@@ -1092,7 +1112,8 @@ def ui_m_register(mid, gpt_path, sovits_path, ref_path, note, ptext, plang, re_a
     if not ok:
         raise gr.Error(msg)
     ids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
-    return msg, ui_m_list(), gr.update(choices=ids, value=mid)
+    return (msg, ui_m_list(), gr.update(choices=ids, value=mid),
+            gr.update(choices=ids, value=mid))
 
 
 def ui_m_activate(mid):
@@ -1101,9 +1122,9 @@ def ui_m_activate(mid):
     ok, msg = activate_model(mid)
     if not ok:
         raise gr.Error(msg)
-    umodel_upd = gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                           value=mid)
-    return (msg + "(试音页已自动切换到该模型)", ui_m_list(), ui_active_model(), umodel_upd)
+    mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
+    return (msg + "(专属音色模式已生效)", ui_m_list(), ui_active_model(),
+            gr.update(choices=mids, value=mid), gr.update(choices=mids, value=mid))
 
 
 def ui_m_del(mid):
@@ -1117,158 +1138,216 @@ def ui_m_del(mid):
     return f"已删除注册 '{mid}'(权重文件保留)", ui_m_list()
 
 
+def ui_m_pick_full(mid):
+    reg = load_reg()
+    m = reg["models"].get(mid)
+    if not m:
+        return None, "", gr.update(), ""
+    return (m.get("ref_audio"), m.get("prompt_text", ""),
+            gr.update(value=m.get("prompt_lang", "zh")), m.get("note", ""))
+
+
+def _edit_model(mid, prompt_text, prompt_lang, note):
+    reg = load_reg()
+    m = reg["models"].get(mid)
+    if not m:
+        return False, f"模型包 '{mid}' 不存在"
+    if prompt_text is not None:
+        m["prompt_text"] = prompt_text.strip()
+    if prompt_lang:
+        m["prompt_lang"] = prompt_lang
+    if note is not None:
+        m["note"] = note
+    save_reg(reg)
+    return True, f"模型包 '{mid}' 已更新"
+
+
+def ui_m_edit(mid, ptext, plang, note):
+    ok, msg = _edit_model(mid, ptext, plang, note)
+    if not ok:
+        raise gr.Error(msg)
+    return msg, ui_m_list()
+
+
 def build_ui():
     st0 = load_reg()["settings"]
+    active0 = st0.get("active_model", "base")
     with gr.Blocks(title="TTS 音色管理后台") as demo:
-        gr.Markdown("## 🗂️ GPT-SoVITS 音色管理后台\n注册后的音色,任何设备可通过 "
-                    "`POST :9873/tts {\"voice\":\"音色ID\",\"text\":\"...\"}` 直接调用。")
-        with gr.Tab("🔊 流式试音"):
-            with gr.Row():
-                with gr.Column():
-                    t_voice = gr.Dropdown(choices=[], value=None,
-                                          label="选择音色", interactive=True)
-                    t_model = gr.Markdown(ui_active_model())
-                    t_umodel = gr.Dropdown(
-                        choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                        value="base",
-                        label="使用模型(base=音色库克隆 | 选微调模型=专属音色,自动切换)")
-                    t_text = gr.Textbox(
-                        label="要合成的文本",
-                        value="你好,这是管理后台的流式试音,点击开始后声音马上播放。",
-                        lines=3)
-                    with gr.Row():
-                        t_lang = gr.Dropdown(choices=LANG_FULL,
-                                             value=st0.get("default_text_lang", "zh"),
-                                             label="文本语言")
-                        t_mode = gr.Radio(choices=[("3 = 极速首包", 3), ("2 = 质量优先", 2)],
-                                          value=st0.get("default_streaming_mode", 3), type="value",
-                                          label="流式模式")
-                    t_speed = gr.Slider(0.5, 2.0, value=st0.get("default_speed", 1.0),
-                                        step=0.05, label="语速")
-                    with gr.Accordion("⚙️ 进阶参数(采样/复现/长文本)", open=False):
+        gr.Markdown(
+            "## 🗂️ GPT-SoVITS 音色管理后台\n"
+            "两种工作模式,**各自独立工作区**:\n"
+            "🔵 **克隆模式** — base 底模 + 音色库,上传 3~10s 参考音频即可零样本克隆任意音色;\n"
+            "🟣 **专属模式** — 上传自己微调的模型 + 捆绑参考音频,固定音色长期使用。\n"
+            "调用 API:`{\"voice\":\"音色ID\"}` 走克隆;`{\"model\":\"模型ID\"}` 走专属(自动切换模型)。")
+
+        # ==================== 栏目一: 克隆模式 ====================
+        with gr.Tab("🔵 克隆模式"):
+            with gr.Tab("🔊 流式试音"):
+                with gr.Row():
+                    with gr.Column():
+                        t_voice = gr.Dropdown(choices=[], value=None,
+                                              label="选择音色", interactive=True)
+                        t_text = gr.Textbox(
+                            label="要合成的文本",
+                            value="你好,这是克隆模式的流式试音,点击开始后声音马上播放。", lines=3)
                         with gr.Row():
-                            a_seed = gr.Number(value=-1, precision=0,
-                                               label="随机种子(-1=随机,固定值可复现)")
-                            a_rep = gr.Slider(1.0, 3.0, value=1.35, step=0.05,
-                                              label="重复惩罚(复读/卡字时调大)")
+                            t_lang = gr.Dropdown(choices=LANG_FULL, value="zh", label="文本语言")
+                            t_mode = gr.Radio(choices=[("3 = 极速首包", 3), ("2 = 质量优先", 2)],
+                                              value=st0.get("default_streaming_mode", 3),
+                                              type="value", label="流式模式")
+                        t_speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="语速")
+                        with gr.Accordion("⚙️ 进阶参数(采样/复现/长文本)", open=False):
+                            with gr.Row():
+                                a_seed = gr.Number(value=-1, precision=0,
+                                                   label="随机种子(-1=随机,固定值可复现)")
+                                a_rep = gr.Slider(1.0, 3.0, value=1.35, step=0.05,
+                                                  label="重复惩罚(复读/卡字时调大)")
+                            with gr.Row():
+                                a_topk = gr.Slider(1, 100, value=15, step=1,
+                                                   label="Top-K(越小越稳)")
+                                a_topp = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Top-P")
+                                a_temp = gr.Slider(0.1, 2.0, value=1.0, step=0.05,
+                                                   label="温度(高=更有情感)")
+                            a_cut = gr.Dropdown(
+                                choices=[("按标点切(推荐长文)", "cut5"), ("不切,整句直出", "cut0"),
+                                         ("按中文句号切", "cut3"), ("按英文句号切", "cut4"),
+                                         ("凑四句一切", "cut1"), ("凑50字一切", "cut2")],
+                                value="cut5", label="长文本切句方式")
+                        t_btn = gr.Button("🔊 开始合成(克隆模式)", variant="primary")
+                    with gr.Column():
+                        t_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True,
+                                           autoplay=True, show_download_button=True)
+                        t_stats = gr.Markdown("克隆模式:使用 base 底模 + 所选音色的参考音频")
+
+            with gr.Tab("➕ 添加克隆音色"):
+                with gr.Row():
+                    with gr.Column():
+                        up = gr.Audio(sources=["upload"], type="filepath",
+                                      label="上传参考音频(要求 3~10 秒,超限会被拒绝)")
+                        up_status = gr.Markdown("")
+                        srv = gr.Textbox(label="或填写服务器本地音频路径(与上传二选一)", lines=1)
+                    with gr.Column():
+                        vid = gr.Textbox(label="音色ID(调用时用的名字,如 xiaoming)", lines=1)
+                        ptext = gr.Textbox(label="参考音频逐字转写(强烈建议填写)", lines=2)
+                        plang = gr.Dropdown(choices=LANG_FULL, value="zh", label="参考音频语言")
+                        asr_btn = gr.Button("🎙️ 自动识别转写(从上方音频识别台词和语言)")
+                        note = gr.Textbox(label="备注(可选)", lines=1)
+                reg_btn = gr.Button("💾 注册克隆音色", variant="primary")
+                reg_out = gr.Markdown("")
+
+            with gr.Tab("📚 音色管理"):
+                lst = gr.Dataframe(
+                    headers=["音色ID", "时长s", "语言", "转写文本", "文件路径", "备注"],
+                    interactive=False, wrap=True)
+                refresh_btn = gr.Button("🔄 刷新列表")
+                with gr.Row():
+                    pick = gr.Dropdown(choices=[], label="选择音色", interactive=True)
+                    play = gr.Audio(label="试听参考音频", interactive=False)
+                with gr.Row():
+                    e_audio = gr.Audio(sources=["upload"], type="filepath",
+                                       label="替换选中音色的参考音频(可选,要求 3~10s;留空=不替换)")
+                    with gr.Column():
+                        e_asr = gr.Checkbox(value=False,
+                                            label="替换后自动重新识别转写(默认保留原转写)")
+                        repl_btn = gr.Button("🔄 替换参考音频", variant="secondary")
+                with gr.Row():
+                    e_prompt = gr.Textbox(label="转写文本(可修改)", lines=2)
+                    with gr.Column():
+                        e_lang = gr.Dropdown(choices=LANG_FULL, label="参考音频语言(可修改)")
+                        e_newid = gr.Textbox(label="新音色ID(留空=不改名)", lines=1)
+                        e_note = gr.Textbox(label="备注(可修改)", lines=1)
+                with gr.Row():
+                    edit_btn = gr.Button("💾 保存修改", variant="primary")
+                    del_btn = gr.Button("🗑️ 删除选中音色", variant="stop")
+                with gr.Row():
+                    edit_out = gr.Markdown("")
+                    del_out = gr.Markdown("")
+
+        # ==================== 栏目二: 专属模式 ====================
+        with gr.Tab("🟣 专属模式"):
+            with gr.Tab("➕ 添加专属音色(模型包)"):
+                with gr.Row():
+                    with gr.Column():
+                        m_id = gr.Textbox(label="模型ID(如 anke_ft, 也是专属音色的名字)", lines=1)
+                        m_gpt = gr.File(label="GPT 权重文件(.pth/.ckpt)", file_types=[".pth", ".ckpt"])
+                        m_sovits = gr.File(label="SoVITS 权重文件(.pth)", file_types=[".pth"])
+                    with gr.Column():
+                        m_ref = gr.Audio(sources=["upload"], type="filepath",
+                                         label="捆绑参考音频(3~10s, 该说话人语料)")
+                        m_note = gr.Textbox(label="备注", lines=1)
+                with gr.Row():
+                    with gr.Column():
+                        m_ptext = gr.Textbox(label="参考音频转写(留空=自动ASR识别)", lines=2)
+                        m_lang = gr.Dropdown(choices=LANG_FULL, value="zh",
+                                             label="参考音频语言(自动识别时忽略)")
+                    with gr.Column():
+                        m_asr = gr.Checkbox(value=True, label="自动ASR识别转写")
+                m_reg_btn = gr.Button("📥 注册专属音色包", variant="primary")
+                m_out = gr.Markdown("")
+
+            with gr.Tab("📚 模型包管理"):
+                m_active_md = gr.Markdown(ui_active_model())
+                m_tbl = gr.Dataframe(
+                    headers=["模型ID", "GPT权重", "SoVITS权重", "备注", "状态"],
+                    interactive=False, wrap=True)
+                m_refresh = gr.Button("🔄 刷新列表")
+                with gr.Row():
+                    m_pick = gr.Dropdown(choices=[], label="选择模型包", interactive=True)
+                    m_play = gr.Audio(label="试听捆绑参考音频", interactive=False)
+                with gr.Row():
+                    m_eprompt = gr.Textbox(label="转写文本(可修改)", lines=2)
+                    with gr.Column():
+                        m_elang = gr.Dropdown(choices=LANG_FULL, label="参考音频语言(可修改)")
+                        m_enote = gr.Textbox(label="备注(可修改)", lines=1)
+                with gr.Row():
+                    m_save = gr.Button("💾 保存修改", variant="primary")
+                    m_act_btn = gr.Button("🚀 启用选中模型", variant="primary")
+                    m_del_btn = gr.Button("🗑️ 删除选中注册", variant="stop")
+                m_out = gr.Markdown("")
+
+            with gr.Tab("🔊 流式试音"):
+                with gr.Row():
+                    with gr.Column():
+                        f_model = gr.Dropdown(
+                            choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                            value=active0 if active0 != "base" and any(
+                                m["id"] == active0 for m in list_models()) else "base",
+                            label="使用模型包(专属音色)") if False else gr.Dropdown(
+                            choices=[], value=None, label="使用模型包(专属音色)", interactive=True)
+                        f_text = gr.Textbox(
+                            label="要合成的文本",
+                            value="你好,这是专属音色的流式试音,自动使用模型捆绑的参考音频。", lines=3)
                         with gr.Row():
-                            a_topk = gr.Slider(1, 100, value=15, step=1,
-                                               label="Top-K(越小越稳,朗读建议 10~15)")
-                            a_topp = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Top-P")
-                            a_temp = gr.Slider(0.1, 2.0, value=1.0, step=0.05,
-                                               label="温度(高=更有情感但易不稳)")
-                        a_cut = gr.Dropdown(
-                            choices=[("按标点切(推荐长文)", "cut5"), ("不切,整句直出", "cut0"),
-                                     ("按中文句号切", "cut3"), ("按英文句号切", "cut4"),
-                                     ("凑四句一切", "cut1"), ("凑50字一切", "cut2")],
-                            value="cut5", label="长文本切句方式")
-                    t_btn = gr.Button("🔊 开始合成", variant="primary")
-                with gr.Column():
-                    t_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True,
-                                       autoplay=True, show_download_button=True)
-                    t_stats = gr.Markdown("")
-            t_btn.click(tts_stream_play,
-                        [t_voice, t_text, t_lang, t_mode, t_speed,
-                         a_seed, a_rep, a_topk, a_topp, a_temp, a_cut, t_umodel],
-                        [t_audio, t_stats])
+                            f_lang = gr.Dropdown(choices=LANG_FULL, value="zh", label="文本语言")
+                            f_mode = gr.Radio(choices=[("3 = 极速首包", 3), ("2 = 质量优先", 2)],
+                                              value=3, type="value", label="流式模式")
+                        f_speed = gr.Slider(0.5, 2.0, value=1.0, step=0.05, label="语速")
+                        with gr.Accordion("⚙️ 进阶参数(采样/复现/长文本)", open=False):
+                            with gr.Row():
+                                b_seed = gr.Number(value=-1, precision=0,
+                                                   label="随机种子(-1=随机,固定值可复现)")
+                                b_rep = gr.Slider(1.0, 3.0, value=1.35, step=0.05,
+                                                  label="重复惩罚(复读/卡字时调大)")
+                            with gr.Row():
+                                b_topk = gr.Slider(1, 100, value=15, step=1, label="Top-K(越小越稳)")
+                                b_topp = gr.Slider(0.1, 1.0, value=1.0, step=0.05, label="Top-P")
+                                b_temp = gr.Slider(0.1, 2.0, value=1.0, step=0.05, label="温度(高=更有情感)")
+                            b_cut = gr.Dropdown(
+                                choices=[("按标点切(推荐长文)", "cut5"), ("不切,整句直出", "cut0"),
+                                         ("按中文句号切", "cut3"), ("按英文句号切", "cut4"),
+                                         ("凑四句一切", "cut1"), ("凑50字一切", "cut2")],
+                                value="cut5", label="长文本切句方式")
+                        f_btn = gr.Button("🔊 开始合成(专属模式)", variant="primary")
+                    with gr.Column():
+                        f_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True,
+                                           autoplay=True, show_download_button=True)
+                        f_stats = gr.Markdown("专属模式:自动切换到所选模型,并使用其捆绑的参考音频")
 
-        with gr.Tab("➕ 注册音色"):
-            with gr.Row():
-                with gr.Column():
-                    up = gr.Audio(sources=["upload"], type="filepath",
-                                  label="上传参考音频(要求 3~10 秒,超限会被拒绝)")
-                    up_status = gr.Markdown("")
-                    srv = gr.Textbox(label="或填写服务器本地音频路径(与上传二选一)", lines=1)
-                with gr.Column():
-                    vid = gr.Textbox(label="音色ID(调用时用的名字,如 xiaoming)", lines=1)
-                    ptext = gr.Textbox(label="参考音频逐字转写(强烈建议填写)", lines=2)
-                    plang = gr.Dropdown(choices=LANG_FULL, value="zh", label="参考音频语言")
-                    asr_btn = gr.Button("🎙️ 自动识别转写(从上方音频识别台词和语言)")
-                    note = gr.Textbox(label="备注(可选)", lines=1)
-            reg_btn = gr.Button("💾 注册音色", variant="primary")
-            reg_out = gr.Markdown("")
-            reg_btn.click(ui_register, [vid, up, srv, ptext, plang, note], [reg_out, t_voice])
-            asr_btn.click(ui_autotranscribe, [up, srv], [ptext, plang, reg_out])
-            up.upload(ui_check_upload, [up], [up_status, up])
-
-        with gr.Tab("📋 音色列表 / 删除 / 试听"):
-            lst = gr.Dataframe(
-                headers=["音色ID", "时长s", "语言", "转写文本", "文件路径", "备注"],
-                interactive=False, wrap=True)
-            refresh_btn = gr.Button("🔄 刷新列表")
-            with gr.Row():
-                pick = gr.Dropdown(choices=[], label="选择音色", interactive=True)
-                play = gr.Audio(label="试听参考音频", interactive=False)
-            with gr.Row():
-                e_audio = gr.Audio(sources=["upload"], type="filepath",
-                                   label="替换选中音色的参考音频(可选,要求 3~10s;留空=不替换)")
-                with gr.Column():
-                    e_asr = gr.Checkbox(value=True, label="替换后自动重新识别转写")
-                    repl_btn = gr.Button("🔄 替换参考音频", variant="secondary")
-            with gr.Row():
-                e_prompt = gr.Textbox(label="转写文本(可修改)", lines=2)
-                with gr.Column():
-                    e_lang = gr.Dropdown(choices=LANG_FULL, label="参考音频语言(可修改)")
-                    e_model = gr.Dropdown(
-                        choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                        value="base", label="绑定微调模型(调用该音色时自动切换;base=克隆模式)")
-                    e_newid = gr.Textbox(label="新音色ID(留空=不改名)", lines=1)
-                    e_note = gr.Textbox(label="备注(可修改)", lines=1)
-            with gr.Row():
-                edit_btn = gr.Button("💾 保存修改", variant="primary")
-                del_btn = gr.Button("🗑️ 删除选中音色", variant="stop")
-            with gr.Row():
-                edit_out = gr.Markdown("")
-                del_out = gr.Markdown("")
-            refresh_btn.click(lambda: (ui_list(), gr.update(choices=[r[0] for r in ui_list()])),
-                              None, [lst, pick])
-            pick.change(ui_pick_full, [pick], [play, e_prompt, e_lang, e_newid, e_note, e_model])
-            repl_btn.click(ui_replace_audio, [pick, e_audio, e_asr],
-                           [edit_out, play, e_prompt, e_lang, lst])
-            edit_btn.click(ui_save_edit, [pick, e_newid, e_prompt, e_lang, e_note, e_model],
-                           [edit_out, lst, pick, t_voice])
-            del_btn.click(ui_delete, [pick], [del_out, lst])
-
-        with gr.Tab("🧠 微调模型"):
-            gr.Markdown(
-                "### 🧠 微调(专属音色)模型管理\n"
-                "官方 webui 训练产物是**一对权重**(`GPT_SoVITS/logs/<实验名>/` 下的 `GPT-*.pth` 与 `SoVITS-*.pth`)。\n"
-                "**① 上传注册**权重对;**② 到「音色列表 → 编辑」给音色绑定该模型**——之后调用绑定的音色会"
-                "**自动切换**到此模型,调用未绑定的音色(克隆模式)**自动切回 base 底模**,设备端无感。\n"
-                "注意:**同一时间只有一个模型生效**,两类音色频繁交替调用会反复热切换(每次数秒),建议分批使用;"
-                "重启自动恢复启用状态;微调需基于 v2ProPlus 底模训练。")
-            with gr.Row():
-                with gr.Column():
-                    m_id = gr.Textbox(label="模型ID(如 anke_ft)", lines=1)
-                    m_gpt = gr.File(label="GPT 权重文件(.pth/.ckpt)", file_types=[".pth", ".ckpt"])
-                    m_sovits = gr.File(label="SoVITS 权重文件(.pth)", file_types=[".pth"])
-                    m_ref = gr.Audio(sources=["upload"], type="filepath",
-                                     label="捆绑参考音频(3~10s, 该说话人语料)")
-                    m_note = gr.Textbox(label="备注", lines=1)
-                with gr.Column():
-                    m_tbl = gr.Dataframe(headers=["模型ID", "GPT权重", "SoVITS权重", "备注", "状态"],
-                                         interactive=False, wrap=True)
-                    m_ptext = gr.Textbox(label="参考音频转写(留空=自动ASR识别)", lines=2)
-                    m_lang = gr.Dropdown(choices=LANG_FULL, value="zh",
-                                         label="参考音频语言(自动识别时忽略)")
-                    m_asr = gr.Checkbox(value=True, label="自动ASR识别转写")
-                    m_pick = gr.Dropdown(choices=[], label="选择要启用的模型(含 base 底模)")
-            with gr.Row():
-                m_reg_btn = gr.Button("📥 注册模型")
-                m_act_btn = gr.Button("🚀 启用选中模型", variant="primary")
-                m_del_btn = gr.Button("🗑️ 删除选中注册")
-            m_out = gr.Markdown("")
-            m_reg_btn.click(ui_m_register,
-                            [m_id, m_gpt, m_sovits, m_ref, m_note, m_ptext, m_lang, m_asr],
-                            [m_out, m_tbl, m_pick])
-            m_ref.upload(ui_asr_for_model, [m_ref], [m_ptext, m_lang, m_out])
-            m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, t_model, t_umodel])
-            m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
-
+        # ==================== 通用: 备份 / 调用说明 ====================
         with gr.Tab("💾 备份 / 恢复"):
             with gr.Row():
                 with gr.Column():
-                    gr.Markdown("### ⬇️ 备份\n打包全部音色音频 + 注册表,下载保存")
+                    gr.Markdown("### ⬇️ 备份\n打包全部克隆音色 + 专属音色包(含模型权重)+ 注册表,下载保存")
                     bk_btn = gr.Button("📦 生成备份包", variant="primary")
                     bk_file = gr.File(label="备份包(右键/点击下载)")
                     bk_out = gr.Markdown("")
@@ -1278,25 +1357,48 @@ def build_ui():
                     rs_overwrite = gr.Checkbox(value=False, label="覆盖同名音色")
                     rs_btn = gr.Button("♻️ 恢复备份", variant="primary")
                     rs_out = gr.Markdown("")
-            bk_btn.click(ui_backup, None, [bk_file, bk_out])
-            rs_btn.click(ui_restore, [rs_file, rs_overwrite], [rs_out, lst, t_voice])
 
         with gr.Tab("📖 调用说明"):
             gr.Markdown(CALL_DOC)
+
+        # ==================== 事件绑定(克隆) ====================
+        reg_btn.click(ui_register, [vid, up, srv, ptext, plang, note], [reg_out, t_voice])
+        up.upload(ui_check_upload, [up], [up_status, up])
+        asr_btn.click(ui_autotranscribe, [up, srv], [ptext, plang, reg_out])
+        refresh_btn.click(lambda: (ui_list(), gr.update(choices=[r[0] for r in ui_list()])),
+                          None, [lst, pick])
+        pick.change(ui_pick_full, [pick], [play, e_prompt, e_lang, e_newid, e_note])
+        repl_btn.click(ui_replace_audio, [pick, e_audio, e_asr],
+                       [edit_out, play, e_prompt, e_lang, lst])
+        edit_btn.click(ui_save_edit, [pick, e_newid, e_prompt, e_lang, e_note, gr.State("base")],
+                       [edit_out, lst, pick, t_voice])
+        del_btn.click(ui_delete, [pick], [del_out, lst])
+        t_btn.click(tts_stream_play,
+                    [t_voice, t_text, t_lang, t_mode, t_speed,
+                     a_seed, a_rep, a_topk, a_topp, a_temp, a_cut, gr.State("base")],
+                    [t_audio, t_stats])
+
+        # ==================== 事件绑定(专属) ====================
+        m_reg_btn.click(ui_m_register,
+                        [m_id, m_gpt, m_sovits, m_ref, m_note, m_ptext, m_lang, m_asr],
+                        [m_out, m_tbl, m_pick, f_model])
+        m_ref.upload(ui_asr_for_model, [m_ref], [m_ptext, m_lang, m_out])
+        m_refresh.click(lambda: (ui_m_list(), _m_pick_update()), None, [m_tbl, m_pick])
+        m_pick.change(ui_m_pick_full, [m_pick], [m_play, m_eprompt, m_elang, m_enote])
+        m_save.click(ui_m_edit, [m_pick, m_eprompt, m_elang, m_enote], [m_out, m_tbl])
+        m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, m_active_md, m_pick, f_model])
+        m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
+
+        # ==================== 页面加载刷新 ====================
         def _load_all():
             reg = load_reg()
             active = reg["settings"].get("active_model", "base")
             mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
+            fv = active if active in mids else "base"
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
-                    ui_m_list(), gr.update(choices=mids),
-                    ui_active_model(),
-                    gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                              value="base"),
-                    gr.update(choices=mids, value=active))
-        demo.load(_load_all,
-                  None, [lst, pick, t_voice, m_tbl, m_pick, t_model, e_model, t_umodel])
+                    ui_m_list(), gr.update(choices=mids), gr.update(choices=mids, value=fv))
+        demo.load(_load_all, None, [lst, pick, t_voice, m_tbl, m_pick, f_model])
     return demo
-
 
 demo = build_ui()
 app = gr.mount_gradio_app(app, demo, path="/ui")
