@@ -2,8 +2,9 @@
 
 > 部署日期:2026-08-29 | 环境:WSL2 (Ubuntu) + CUDA 12.6 + conda | 用途:个人/内部,中英混合,兼顾日语
 >
-> **其他设备/程序如何调用本服务 → 见配套的《[TTS接口文档](/home/hwj/AI/tts-server/TTS接口文档.md)》**(参数表、流式格式、curl/Python/JS/嵌入式示例、错误码、FAQ)
-> 音色库目录:`/home/hwj/AI/tts-server/voices/`(参考音频统一放这里,内置示例 `demo_female_zh.wav`)
+> 本文档为**本机部署实录**(记录当时的具体路径/参数, 含选型与排错过程);其他机器部署请以 README 的部署指南为准, 路径按对应结构对应调整。
+> **其他设备/程序如何调用本服务 → 见配套的《[TTS接口文档](./TTS接口文档.md)》**(参数表、流式格式、curl/Python/JS/嵌入式示例、错误码、FAQ)
+> 音色库目录:`./voices/`(参考音频统一放这里,内置示例 `demo_female_zh.wav`)
 
 ## 结论速览
 
@@ -42,14 +43,14 @@ conda activate gpt-sovits    # GPT-SoVITS 主环境 (python 3.10, torch 2.7.0+cu
 > 配置了 tuna conda 镜像(~/.condarc);原 anaconda 安装器自带的
 > `/home/hwj/anaconda3/.condarc`(指向被墙的 repo.anaconda.com)已移除(备份为 .condarc.bak.*),
 > 这正是以前 conda 命令一直失败的原因。pip 走阿里云镜像(系统 pip.conf),共享缓存位于
-> /home/hwj/AI/tts-server/pipcache(3.7G,可删,删后重装依赖需重新下载)。
+> ./pipcache(3.7G,可删,删后重装依赖需重新下载)。
 
 ## 启动 / 停止服务
 
 ```bash
-bash /home/hwj/AI/tts-server/start.sh   # 一键启动全部 3 个服务(幂等,已在运行的自动跳过)
-bash /home/hwj/AI/tts-server/stop.sh    # 一键停止全部
-tail -f /home/hwj/AI/tts-server/api_v2.log   # 看 API 日志
+bash ./start.sh   # 一键启动全部 3 个服务(幂等,已在运行的自动跳过)
+bash ./stop.sh    # 一键停止全部
+tail -f ./api_v2.log   # 看 API 日志
 ```
 
 | 启动后的服务 | 端口 | 说明 |
@@ -62,7 +63,7 @@ tail -f /home/hwj/AI/tts-server/api_v2.log   # 看 API 日志
 (会误杀包含关键字的 shell 自身),用 stop.sh 或按端口 kill。
 
 浏览器打开(本机):**http://localhost:9872**
-其他设备(Tailscale 内网):**http://100.95.19.17:9872**(本机 tailscale 节点 IP;API 同理 http://100.95.19.17:9880,两个服务均已绑 0.0.0.0)功能:输入文字点【开始合成】→ 声音立即边合成边播放;
+其他设备(Tailscale 内网):**http://<服务IP>:9872**(本机 tailscale 节点 IP;API 同理 http://<服务IP>:9880,两个服务均已绑 0.0.0.0)功能:输入文字点【开始合成】→ 声音立即边合成边播放;
 可上传参考音频换音色、切语言(官方全部 11 种语言模式)、调速、切流式模式;
 合成完显示首包延迟/时长统计。它只是 HTTP 调 9880 的 api_v2,不占额外显存。
 (GPT-SoVITS 官方 inference_webui 播放**不是流式**且会重复加载模型,未采用。)
@@ -96,22 +97,22 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 
 ## 客户端示例
 
-`/home/hwj/AI/tts-server/bench/stream_play.py` — 发出请求即播放、边收边播(无声卡环境自动降级保存):
+`./bench/stream_play.py` — 发出请求即播放、边收边播(无声卡环境自动降级保存):
 
 ```bash
-/home/hwj/anaconda3/envs/gpt-sovits/bin/python /home/hwj/AI/tts-server/bench/stream_play.py \
+python(gpt-sovits 环境) ./bench/stream_play.py \
     --text "你好" --ref /path/to/ref.wav \
     --ref-text "参考转写" --text-lang zh --streaming-mode 3 --save out.wav
 ```
 
 注意:WSL2 内无声卡(PortAudio 无输出设备),降级为保存文件;若在 Windows 侧或设备侧
 (ESP32 等)消费流,直接按上面的"WAV 头 + 裸 PCM"格式处理即可。HTTP 服务绑定 127.0.0.1,
-跨机访问已生效:三个服务均绑 0.0.0.0,Tailscale 设备直接访问 100.95.19.17。
+跨机访问已生效:三个服务均绑 0.0.0.0,Tailscale 设备直接访问 <服务IP>。
 
 ## 实测基准(本机 RTX 4060 Laptop 8GB,fp16,conda 环境)
 
-参考音频:`/home/hwj/AI/tts-server/tts-server/voices/demo_female_zh.wav`(3.48s,中文女声)
-复现:`cd /home/hwj/AI/tts-server/bench && /home/hwj/anaconda3/envs/gpt-sovits/bin/python benchmark_tts.py --ref <ref.wav> --ref-text "..." --modes 2 3`
+参考音频:`./voices/demo_female_zh.wav`(3.48s,中文女声)
+复现:`cd ./bench && python(gpt-sovits 环境) benchmark_tts.py --ref <ref.wav> --ref-text "..." --modes 2 3`
 
 | case | 模式 | 首包 TTFB | 生成完 | 音频时长 | RTF |
 |---|---|---|---|---|---|
@@ -128,7 +129,7 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 - 首包 **~0.15s**:发出请求后 150ms 即可开始播放,满足"立马出声"
 - RTF 0.13~0.21:远优于 RTF<0.5;边播边生成不会断流(生成速度≈播放速度 5~8 倍)
 - 服务冷启动后首次请求需 10s 级初始化——start.sh 已内置 zh/en/ja 三语自动预热,启动完成即为热态
-- 音频样本在 `/home/hwj/AI/tts-server/bench/bench_out/`(可回听对比)
+- 音频样本在 `./bench/bench_out/`(可回听对比)
 
 ## 选型记录:VoxCPM 1.5 对比数据(历史存档,VoxCPM 相关文件与环境已删除)
 
@@ -147,22 +148,22 @@ curl -X POST http://127.0.0.1:9880/tts -H "Content-Type: application/json" -d '{
 ## 目录结构
 
 ```
-/home/hwj/AI/tts-server/GPT-SoVITS/        # 官方引擎(零改动, 含 pretrained_models 4.6G/G2PW/sv)
-/home/hwj/AI/tts-server/start.sh / stop.sh / selftest.sh   # 一键启停 / 13 项回归自检
-/home/hwj/AI/tts-server/voice_admin.py     # 管理后台+按名调用+OpenAI端点+ASR+微调模型+GPU keeper
-/home/hwj/AI/tts-server/webui_stream.py    # 流式测试网页
-/home/hwj/AI/tts-server/keepalive.sh(.pid/.log)  # 心跳+看门狗+日志轮转
-/home/hwj/AI/tts-server/api_v2.log         # 服务日志(超10MB自动切.1)
-/home/hwj/AI/tts-server/bench/             # benchmark_tts.py / stream_play.py
-/home/hwj/AI/tts-server/voices/            # 音色库: registry.json + 音频(不入库) + backups/(留10份)
-/home/hwj/AI/tts-server/fine_tuned_models/ # 上传的微调模型专属音色包(权重+参考音频)
-/home/hwj/AI/tts-server/TTS接口文档.md  TTS部署说明.md  README.md   # 文档
+./GPT-SoVITS/        # 官方引擎(零改动, 含 pretrained_models 4.6G/G2PW/sv)
+./start.sh / stop.sh / selftest.sh   # 一键启停 / 13 项回归自检
+./voice_admin.py     # 管理后台+按名调用+OpenAI端点+ASR+微调模型+GPU keeper
+./webui_stream.py    # 流式测试网页
+./keepalive.sh(.pid/.log)  # 心跳+看门狗+日志轮转
+./api_v2.log         # 服务日志(超10MB自动切.1)
+./bench/             # benchmark_tts.py / stream_play.py
+./voices/            # 音色库: registry.json + 音频(不入库) + backups/(留10份)
+./fine_tuned_models/ # 上传的微调模型专属音色包(权重+参考音频)
+./TTS接口文档.md  TTS部署说明.md  README.md   # 文档
 ```
 
 ## 已知事项 / 后续
 
 - 换音色 = 换 `ref_audio_path` + `prompt_text`;常用音色想要更高相似度,可用 WebUI
-  (`conda activate gpt-sovits && cd /home/hwj/AI/tts-server/GPT-SoVITS && python webui.py`)
+  (`conda activate gpt-sovits && cd ./GPT-SoVITS && python webui.py`)
   做 1 分钟数据微调,再经 `/set_gpt_weights` + `/set_sovits_weights` 热加载
 - 日语推理无需额外模型(open_jtalk 词典已装进 conda 环境;BERT 特征仅中文使用)
 - 英文合成依赖 nltk_data(已装进 conda 环境);若重建环境需重新放置

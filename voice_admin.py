@@ -6,7 +6,7 @@
            兼容透传:带 ref_audio_path 的完整请求体原样转发
 - /voices  注册表 API:GET 列表 / POST 注册(服务端本地路径)/ DELETE /voices/{id}
 
-依赖本机 api_v2(9880)运行。启动: bash /home/hwj/AI/tts-server/start_voice_admin.sh
+依赖本机 api_v2(9880)运行。启动: bash start.sh(仓库根目录)
 """
 import json
 import re
@@ -27,8 +27,8 @@ from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
-VOICES_DIR = Path("/home/hwj/AI/tts-server/voices")
 BASE_DIR = Path(__file__).resolve().parent
+VOICES_DIR = BASE_DIR / "voices"
 GPTSOVITS_DIR = BASE_DIR / "GPT-SoVITS"
 MODELS_DIR = BASE_DIR / "fine_tuned_models"
 REG_PATH = VOICES_DIR / "registry.json"
@@ -809,20 +809,20 @@ CALL_DOC = """## 📡 服务总览
 
 | 服务 | 地址 | 用途 |
 |---|---|---|
-| **按名调用 API(设备接入首选)** | `http://100.95.19.17:9873/tts` | 按音色 ID 合成,支持流式 |
-| **OpenAI 兼容端点** | `http://100.95.19.17:9873/v1/audio/speech` | 现成 TTS 客户端即插即用 |
-| 直连 api_v2(官方) | `http://100.95.19.17:9880/tts` | 每次带参考音频路径的完整接口 |
-| 流式测试页 | `http://100.95.19.17:9872` | 网页试听 |
-| 完整接口文档(参数/示例/FAQ) | `/home/hwj/AI/tts-server/TTS接口文档.md` | 强烈建议阅读 |
+| **按名调用 API(设备接入首选)** | `http://<服务IP>:9873/tts` | 按音色 ID 合成,支持流式 |
+| **OpenAI 兼容端点** | `http://<服务IP>:9873/v1/audio/speech` | 现成 TTS 客户端即插即用 |
+| 直连 api_v2(官方) | `http://<服务IP>:9880/tts` | 每次带参考音频路径的完整接口 |
+| 流式测试页 | `http://<服务IP>:9872` | 网页试听 |
+| 完整接口文档(参数/示例/FAQ) | 仓库根目录 `TTS接口文档.md` | 强烈建议阅读 |
 
-服务启停:`bash /home/hwj/AI/tts-server/start.sh`(自动预热)/ `stop.sh`;内置 GPU 保活,闲置后首包无惩罚。接口**无鉴权**,请勿暴露公网。
+服务启停:`bash start.sh`(自动预热)/ `bash stop.sh`;内置 GPU 保活,闲置后首包无惩罚。接口**无鉴权**,请勿暴露公网。
 
 ---
 
 ## 1️⃣ 按名调用(其他设备推荐)
 
 ```bash
-curl -X POST http://100.95.19.17:9873/tts \\
+curl -X POST http://<服务IP>:9873/tts \\
   -H "Content-Type: application/json" \\
   -d '{"voice":"demo_female_zh","text":"你好","streaming_mode":3}' \\
   -o out.wav
@@ -855,7 +855,7 @@ curl -X POST http://100.95.19.17:9873/tts \\
 ## 2️⃣ OpenAI 兼容端点(现成客户端即插即用)
 
 ```bash
-curl -X POST http://100.95.19.17:9873/v1/audio/speech \\
+curl -X POST http://<服务IP>:9873/v1/audio/speech \\
   -H "Content-Type: application/json" \\
   -d '{"model":"tts-1","input":"要合成的话","voice":"anke","response_format":"mp3","speed":1.0}' \\
   -o out.mp3
@@ -863,31 +863,31 @@ curl -X POST http://100.95.19.17:9873/v1/audio/speech \\
 
 - `voice` 填音色 ID;**填未知值(如客户端默认 alloy)自动回退默认音色**,零配置可用
 - `response_format`:mp3(默认)/ wav / flac / opus / aac / pcm,非流式整段返回
-- Python SDK 接法:`base_url="http://100.95.19.17:9873/v1"`,model 任意填
+- Python SDK 接法:`base_url="http://<服务IP>:9873/v1"`,model 任意填
 
 ---
 
 ## 3️⃣ 音色管理 API
 
 ```bash
-curl http://100.95.19.17:9873/voices                              # 列出全部音色
-curl -X POST http://100.95.19.17:9873/voices -H "Content-Type: application/json" \\
-  -d '{"voice_id":"xm","file_path":"/home/hwj/AI/tts-server/voices/xm.wav",
+curl http://<服务IP>:9873/voices                              # 列出全部音色
+curl -X POST http://<服务IP>:9873/voices -H "Content-Type: application/json" \\
+  -d '{"voice_id":"xm","file_path":"<仓库>/voices/xm.wav",
        "prompt_text":"转写","prompt_lang":"zh"}'                    # 注册(音频须在服务端)
-curl -X PATCH http://100.95.19.17:9873/voices/xm -H "Content-Type: application/json" \\
+curl -X PATCH http://<服务IP>:9873/voices/xm -H "Content-Type: application/json" \\
   -d '{"voice_id":"xm2","note":"新备注"}'                           # 修改:改ID/转写/语言/备注
-curl -X DELETE http://100.95.19.17:9873/voices/xm2                 # 删除(音频保留)
+curl -X DELETE http://<服务IP>:9873/voices/xm2                 # 删除(音频保留)
 
 # 专属音色包(微调模型): 上传三件套 / 专属模式调用 / 启用 / 切回底模
-curl -X POST http://100.95.19.17:9873/models/upload -F "id=anke_ft" \
+curl -X POST http://<服务IP>:9873/models/upload -F "id=anke_ft" \
   -F "gpt_file=@GPT-anke.pth" -F "sovits_file=@SoVITS-anke.pth" -F "ref_file=@anke_ref.wav"
-curl -X POST http://100.95.19.17:9873/tts -d '{"model":"anke_ft","text":"..."}'  # 专属模式
-curl -X POST http://100.95.19.17:9873/models/anke_ft/activate     # 手动启用(含预热)
-curl -X POST http://100.95.19.17:9873/models/base/activate        # 切回底模
-curl -X POST http://100.95.19.17:9873/asr \\
-  -d '{"file_path":"/home/hwj/AI/tts-server/voices/x.wav"}'        # 自动转写+检测语言
-curl http://100.95.19.17:9873/voices/backup -o backup.zip          # 备份(全部音色+注册表)
-curl -X POST "http://100.95.19.17:9873/voices/restore?overwrite=true" -F "file=@backup.zip"
+curl -X POST http://<服务IP>:9873/tts -d '{"model":"anke_ft","text":"..."}'  # 专属模式
+curl -X POST http://<服务IP>:9873/models/anke_ft/activate     # 手动启用(含预热)
+curl -X POST http://<服务IP>:9873/models/base/activate        # 切回底模
+curl -X POST http://<服务IP>:9873/asr \\
+  -d '{"file_path":"<仓库>/voices/x.wav"}'        # 自动转写+检测语言
+curl http://<服务IP>:9873/voices/backup -o backup.zip          # 备份(全部音色+注册表)
+curl -X POST "http://<服务IP>:9873/voices/restore?overwrite=true" -F "file=@backup.zip"
 ```
 
 参考音频要求:**3~10 秒**(引擎硬限,上传时自动校验拦截)、干净人声无背景乐;

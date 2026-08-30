@@ -2,17 +2,18 @@
 """GPT-SoVITS 流式测试 WebUI — 输入文字, 边合成边播放(真正流式, 请求发出即出声)。
 
 通过 HTTP 流式对接本机 api_v2 服务(9880), 不重复加载模型, 不占额外显存。
-启动: /home/hwj/anaconda3/envs/gpt-sovits/bin/python webui_stream.py
+启动: conda activate gpt-sovits && python webui_stream.py
 访问: http://localhost:9872  (Windows 浏览器直接开, WSL2 自动转发)
 """
 import time
+from pathlib import Path
 
 import gradio as gr
 import numpy as np
 import requests
 
 API = "http://127.0.0.1:9880"
-DEFAULT_REF = "/home/hwj/AI/tts-server/tts-server/voices/demo_female_zh.wav"
+DEFAULT_REF = str(Path(__file__).resolve().parent / "voices" / "demo_female_zh.wav")
 DEFAULT_REF_TEXT = "希望你以后能够做的比我还好呦。"
 
 LANG_CHOICES = [

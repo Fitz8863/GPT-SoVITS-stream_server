@@ -2,7 +2,16 @@
 # 一键启动 TTS 全套服务: 合成API(9880) + 流式测试页(9872) + 音色管理后台(9873)
 # 幂等: 已在运行的服务自动跳过
 BASE="$(cd "$(dirname "$0")" && pwd)"
-PY=/home/hwj/anaconda3/envs/gpt-sovits/bin/python
+# Python 解释器解析: TTS_PYTHON 环境变量 > conda gpt-sovits 环境 > 系统 python3
+if [ -n "$TTS_PYTHON" ]; then
+    PY="$TTS_PYTHON"
+elif [ -x "$(conda info --base 2>/dev/null)/envs/gpt-sovits/bin/python" ]; then
+    PY="$(conda info --base 2>/dev/null)/envs/gpt-sovits/bin/python"
+elif [ -x "$HOME/anaconda3/envs/gpt-sovits/bin/python" ]; then
+    PY="$HOME/anaconda3/envs/gpt-sovits/bin/python"
+else
+    PY="python3"
+fi
 
 port_up() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
 pid_of()  { ss -ltnp 2>/dev/null | grep ":$1 " | grep -oP 'pid=\K[0-9]+' | head -1; }

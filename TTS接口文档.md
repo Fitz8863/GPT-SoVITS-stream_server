@@ -1,10 +1,10 @@
 # GPT-SoVITS v2ProPlus 流式 TTS 接口文档
 
 > 服务版本:v2ProPlus(fp16) | 更新日期:2026-08-30
-> 完整部署说明见 `/home/hwj/AI/tts-server/TTS部署说明.md`
-> 服务启停:`bash /home/hwj/AI/tts-server/start.sh`(一键拉起,自动预热 zh/en/ja) /
-> `bash /home/hwj/AI/tts-server/stop.sh`(停止,带看门狗抑制)/ `selftest.sh`(一键回归自检全部端点);
-> `bash /home/hwj/AI/tts-server/stop.sh`(一键停止);
+> 完整部署说明见 `./TTS部署说明.md`
+> 服务启停:`bash ./start.sh`(一键拉起,自动预热 zh/en/ja) /
+> `bash ./stop.sh`(停止,带看门狗抑制)/ `selftest.sh`(一键回归自检全部端点);
+> `bash ./stop.sh`(一键停止);
 > 内置保活心跳(每 10 分钟一次微小合成),任意时刻请求都是热态首包
 
 ---
@@ -13,9 +13,9 @@
 
 | 服务 | 地址(Tailscale) | 说明 |
 |---|---|---|
-| **音色管理后台 + 按名调用 ⭐推荐** | `http://100.95.19.17:9873` | 设备接这个:`/tts` 支持按音色名调用(含推理进阶参数);`/ui` 管理界面(流式试音/音色注册) |
-| GPT-SoVITS api_v2 直连 | `http://100.95.19.17:9880` | 每次请求带参考音频路径(下文完整文档) |
-| 流式测试 WebUI | `http://100.95.19.17:9872` | 网页试听测试 |
+| **音色管理后台 + 按名调用 ⭐推荐** | `http://<服务IP>:9873` | 设备接这个:`/tts` 支持按音色名调用(含推理进阶参数);`/ui` 管理界面(流式试音/音色注册) |
+| GPT-SoVITS api_v2 直连 | `http://<服务IP>:9880` | 每次请求带参考音频路径(下文完整文档) |
+| 流式测试 WebUI | `http://<服务IP>:9872` | 网页试听测试 |
 
 | 项目 | 值 |
 |---|---|
@@ -52,10 +52,10 @@
 
 ### 方式一:按音色名调用(推荐,9873)
 
-音色先在管理界面 http://100.95.19.17:9873/ui 注册(上传音频+填转写),之后任何设备:
+音色先在管理界面 http://<服务IP>:9873/ui 注册(上传音频+填转写),之后任何设备:
 
 ```bash
-curl -X POST http://100.95.19.17:9873/tts \
+curl -X POST http://<服务IP>:9873/tts \
   -H "Content-Type: application/json" \
   -d '{"voice": "demo_female_zh", "text": "你好,这是一段测试语音。"}' \
   -o out.wav
@@ -84,12 +84,12 @@ curl -X POST http://100.95.19.17:9873/tts \
 ### 方式二:直连 api_v2(9880,完整参数)
 
 ```bash
-curl -X POST http://100.95.19.17:9880/tts \
+curl -X POST http://<服务IP>:9880/tts \
   -H "Content-Type: application/json" \
   -d '{
     "text": "你好,这是一段测试语音。",
     "text_lang": "zh",
-    "ref_audio_path": "/home/hwj/AI/tts-server/voices/demo_female_zh.wav",
+    "ref_audio_path": "./voices/demo_female_zh.wav",
     "prompt_text": "希望你以后能够做的比我还好呦。",
     "prompt_lang": "zh",
     "media_type": "wav",
@@ -110,7 +110,7 @@ POST JSON body(GET 则为同名 query 参数):
 |---|---|---|---|
 | `text` **必填** | str | — | 要合成的文本 |
 | `text_lang` **必填** | str | — | 文本语言,见下方语言表 |
-| `ref_audio_path` **必填** | str | — | **服务端本地**参考音频路径(3~10s 干净人声),如 `/home/hwj/AI/tts-server/voices/xxx.wav` |
+| `ref_audio_path` **必填** | str | — | **服务端本地**参考音频路径(3~10s 干净人声),如 `./voices/xxx.wav` |
 | `prompt_lang` **必填** | str | — | 参考音频的语言 |
 | `prompt_text` | str | "" | 参考音频的逐字转写。**强烈建议提供**,音色相似度和稳定性明显更好 |
 | `aux_ref_audio_paths` | list[str] | [] | 附加参考音频(多音色融合,一般不用) |
@@ -198,13 +198,13 @@ Content-Type: audio/wav            ← 响应头无 Content-Length(chunked)
 
 ```bash
 # 流式(整段落盘,边下边写)
-curl -N -X POST http://100.95.19.17:9880/tts \
+curl -N -X POST http://<服务IP>:9880/tts \
   -H "Content-Type: application/json" \
-  -d '{"text":"流式测试。","text_lang":"zh","ref_audio_path":"/home/hwj/AI/tts-server/voices/demo_female_zh.wav","prompt_text":"希望你以后能够做的比我还好呦。","prompt_lang":"zh","streaming_mode":3}' \
+  -d '{"text":"流式测试。","text_lang":"zh","ref_audio_path":"./voices/demo_female_zh.wav","prompt_text":"希望你以后能够做的比我还好呦。","prompt_lang":"zh","streaming_mode":3}' \
   -o stream.wav
 
 # 播放流(需要声音直接出)
-curl -N -X POST http://100.95.19.17:9880/tts -H "Content-Type: application/json" \
+curl -N -X POST http://<服务IP>:9880/tts -H "Content-Type: application/json" \
   -d '{...同上, "media_type":"raw"...}' | ffplay -f s16le -ar 32000 -ch_layout mono -i -
 ```
 
@@ -213,11 +213,11 @@ curl -N -X POST http://100.95.19.17:9880/tts -H "Content-Type: application/json"
 ```python
 import io, wave, requests, numpy as np, sounddevice as sd
 
-API = "http://100.95.19.17:9880/tts"
+API = "http://<服务IP>:9880/tts"
 payload = {
     "text": "你好,来自 Python 的流式调用。",
     "text_lang": "zh",
-    "ref_audio_path": "/home/hwj/AI/tts-server/voices/demo_female_zh.wav",
+    "ref_audio_path": "./voices/demo_female_zh.wav",
     "prompt_text": "希望你以后能够做的比我还好呦。",
     "prompt_lang": "zh",
     "media_type": "wav",
@@ -242,18 +242,18 @@ for chunk in it:
 stream.stop()
 ```
 
-现成脚本:`/home/hwj/AI/tts-server/bench/stream_play.py`(支持 `--save`、无声卡降级)。
+现成脚本:`./bench/stream_play.py`(支持 `--save`、无声卡降级)。
 
 ### 5.3 浏览器 JavaScript(Web Audio,网页即点即播)
 
 ```javascript
-const resp = await fetch("http://100.95.19.17:9880/tts", {
+const resp = await fetch("http://<服务IP>:9880/tts", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({
     text: "你好,浏览器流式播放测试。",
     text_lang: "zh",
-    ref_audio_path: "/home/hwj/AI/tts-server/voices/demo_female_zh.wav",
+    ref_audio_path: "./voices/demo_female_zh.wav",
     prompt_text: "希望你以后能够做的比我还好呦。",
     prompt_lang: "zh", media_type: "wav", streaming_mode: 3,
   }),
@@ -293,7 +293,7 @@ for (;;) {
 - 收到的字节流即 **int16 LE 单声道 32000Hz PCM**,按序写入 I2S/DAC
 - 关键:下载速度(RTF 0.15,即 1s 音频 0.15s 传完)远快于播放,**必须做环形缓冲**
   起播水位约 0.3~0.5s(约 20~32KB),缓冲区建议 ≥2s(128KB)防抖动
-- 换音色:参考音频须先放到服务端 `/home/hwj/AI/tts-server/voices/`,设备只传路径
+- 换音色:参考音频须先放到服务端 `./voices/`,设备只传路径
 
 ---
 
@@ -309,7 +309,7 @@ for (;;) {
 (实测所有错误统一为 400 + `{"message": ...}`;客户端解析 `message` 字段即可。)
 
 客户端注意:失败时没有音频流,应先检查 `status_code==200` 再开始播放;
-流中途断开(`Response ended prematurely`)通常是服务端异常,查 `/home/hwj/AI/tts-server/api_v2.log`。
+流中途断开(`Response ended prematurely`)通常是服务端异常,查 `./api_v2.log`。
 
 ---
 
@@ -318,15 +318,15 @@ for (;;) {
 ### `/control` — 服务控制
 
 ```bash
-curl "http://100.95.19.17:9880/control?command=restart"   # 重启(重新加载模型, 约20s)
-curl "http://100.95.19.17:9880/control?command=exit"      # 退出进程
+curl "http://<服务IP>:9880/control?command=restart"   # 重启(重新加载模型, 约20s)
+curl "http://<服务IP>:9880/control?command=exit"      # 退出进程
 ```
 
 ### `/set_gpt_weights`、`/set_sovits_weights` — 热切换模型(微调后用)
 
 ```bash
-curl "http://100.95.19.17:9880/set_gpt_weights?weights_path=GPT_SoVITS/logs/xxx/GPT-even.pth"
-curl "http://100.95.19.17:9880/set_sovits_weights?weights_path=GPT_SoVITS/logs/xxx/SoVITS-eighth.pth"
+curl "http://<服务IP>:9880/set_gpt_weights?weights_path=GPT_SoVITS/logs/xxx/GPT-even.pth"
+curl "http://<服务IP>:9880/set_sovits_weights?weights_path=GPT_SoVITS/logs/xxx/SoVITS-eighth.pth"
 ```
 
 切换立即生效、不用重启服务,所有后续请求用新音色模型。
@@ -335,19 +335,19 @@ curl "http://100.95.19.17:9880/set_sovits_weights?weights_path=GPT_SoVITS/logs/x
 
 ```bash
 # 列出全部音色
-curl http://100.95.19.17:9873/voices
+curl http://<服务IP>:9873/voices
 
 # 注册音色(音频须已在服务端磁盘上;网页上传请用管理界面 /ui)
-curl -X POST http://100.95.19.17:9873/voices \
+curl -X POST http://<服务IP>:9873/voices \
   -H "Content-Type: application/json" \
-  -d '{"voice_id":"xiaoming","file_path":"/home/hwj/AI/tts-server/voices/xiaoming.wav",
+  -d '{"voice_id":"xiaoming","file_path":"./voices/xiaoming.wav",
        "prompt_text":"参考音频的转写","prompt_lang":"zh","note":"产品音色"}'
 
 # 删除音色(注册表条目删除,磁盘文件保留)
-curl -X DELETE http://100.95.19.17:9873/voices/xiaoming
+curl -X DELETE http://<服务IP>:9873/voices/xiaoming
 
 # 修改音色: 改ID(重命名,音频文件同步改名)/ 转写 / 语言 / 备注(字段可选)
-curl -X PATCH http://100.95.19.17:9873/voices/xiaoming \
+curl -X PATCH http://<服务IP>:9873/voices/xiaoming \
   -H "Content-Type: application/json" \
   -d '{"voice_id":"xiaoming_new","prompt_text":"修正后的转写","note":"产品音色"}'
 ```
@@ -355,9 +355,9 @@ curl -X PATCH http://100.95.19.17:9873/voices/xiaoming \
 ### 9873 `/asr` — 参考音频自动转写
 
 ```bash
-curl -X POST http://100.95.19.17:9873/asr \
+curl -X POST http://<服务IP>:9873/asr \
   -H "Content-Type: application/json" \
-  -d '{"file_path":"/home/hwj/AI/tts-server/voices/xxx.wav"}'
+  -d '{"file_path":"./voices/xxx.wav"}'
 # → {"text":"识别出的台词","prompt_lang":"zh"}   (语言自动检测)
 ```
 管理界面「注册音色」页有同名按钮:上传音频后点【🎙️ 自动识别转写】即可自动填好
@@ -376,7 +376,7 @@ curl -X POST http://100.95.19.17:9873/asr \
 **① 网页/接口上传(推荐)**:管理界面「🧠 微调模型」上传三个文件即可;接口版:
 
 ```bash
-curl -X POST http://100.95.19.17:9873/models/upload \
+curl -X POST http://<服务IP>:9873/models/upload \
   -F "id=anke_ft" -F "note=安可微调" \
   -F "gpt_file=@GPT-anke.pth" -F "sovits_file=@SoVITS-anke.pth" \
   -F "ref_file=@anke_ref.wav" -F "re_asr=true"
@@ -386,14 +386,14 @@ curl -X POST http://100.95.19.17:9873/models/upload \
 
 ```bash
 # 注册模型对(相对路径按 GPT-SoVITS/ 解析, 也可用绝对路径)
-curl -X POST http://100.95.19.17:9873/models -H "Content-Type: application/json" \
+curl -X POST http://<服务IP>:9873/models -H "Content-Type: application/json" \
   -d '{"id":"anke_ft","gpt_path":"GPT_SoVITS/logs/anke/GPT-anke.pth",
        "sovits_path":"GPT_SoVITS/logs/anke/SoVITS-anke.pth","note":"安可微调"}'
 
-curl -X POST http://100.95.19.17:9873/models/anke_ft/activate   # 启用
-curl -X POST http://100.95.19.17:9873/models/base/activate      # 切回官方底模
-curl http://100.95.19.17:9873/models                            # 列表+当前启用状态
-curl -X DELETE http://100.95.19.17:9873/models/anke_ft          # 删除注册(权重保留)
+curl -X POST http://<服务IP>:9873/models/anke_ft/activate   # 启用
+curl -X POST http://<服务IP>:9873/models/base/activate      # 切回官方底模
+curl http://<服务IP>:9873/models                            # 列表+当前启用状态
+curl -X DELETE http://<服务IP>:9873/models/anke_ft          # 删除注册(权重保留)
 ```
 
 ### 音色绑定与自动路由(免手动切换)
@@ -401,10 +401,10 @@ curl -X DELETE http://100.95.19.17:9873/models/anke_ft          # 删除注册(�
 给音色绑定微调模型后,**调用时引擎自动切换**——绑定音色自动切到微调模型,未绑定音色自动切回 base:
 
 ```bash
-curl -X PATCH http://100.95.19.17:9873/voices/anke -H "Content-Type: application/json" \
+curl -X PATCH http://<服务IP>:9873/voices/anke -H "Content-Type: application/json" \
   -d '{"model_id":"anke_ft"}'    # 绑定; 传 "base" 或 "" 解除绑定
-curl -X POST http://100.95.19.17:9873/tts -d '{"voice":"anke","text":"..."}'   # 自动用 anke_ft
-curl -X POST http://100.95.19.17:9873/tts -d '{"voice":"其他音色","text":"..."}' # 自动用 base
+curl -X POST http://<服务IP>:9873/tts -d '{"voice":"anke","text":"..."}'   # 自动用 anke_ft
+curl -X POST http://<服务IP>:9873/tts -d '{"voice":"其他音色","text":"..."}' # 自动用 base
 ```
 
 切换含权重加载+自动预热,约数秒;**频繁在绑定/未绑定音色间交替会反复热切换,建议分批使用**。
@@ -426,7 +426,7 @@ curl -X POST http://100.95.19.17:9873/tts -d '{"voice":"其他音色","text":"..
 任何支持 OpenAI TTS 协议的客户端(Home Assistant、各类语音助手框架)无需写对接代码:
 
 ```bash
-curl -X POST http://100.95.19.17:9873/v1/audio/speech \
+curl -X POST http://<服务IP>:9873/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"tts-1","input":"要合成的文本","voice":"anke","response_format":"mp3","speed":1.0}' \
   -o out.mp3
@@ -437,22 +437,22 @@ curl -X POST http://100.95.19.17:9873/v1/audio/speech \
 - `speed` 0.25~4.0;`model` 参数忽略;该端点为整段返回(OpenAI 协议本身不流式),
   需要流式低延迟请用 `/tts`
 - OpenAI SDK 用法:`client.audio.speech.create(model="gpt-sovits-v2proplus", voice="anke", input="...")`
-  (base_url 设为 `http://100.95.19.17:9873/v1`)
+  (base_url 设为 `http://<服务IP>:9873/v1`)
 
 ### 9873 音色库备份 / 恢复
 
 ```bash
 # 备份: 打包全部音色音频 + registry.json 下载(zip)
-curl http://100.95.19.17:9873/voices/backup -o voices_backup.zip
+curl http://<服务IP>:9873/voices/backup -o voices_backup.zip
 
 # 恢复: 上传备份包,合并音色(overwrite=true 覆盖同名)
-curl -X POST "http://100.95.19.17:9873/voices/restore?overwrite=true" -F "file=@voices_backup.zip"
+curl -X POST "http://<服务IP>:9873/voices/restore?overwrite=true" -F "file=@voices_backup.zip"
 ```
 
 管理界面「💾 备份 / 恢复」标签页提供同样的图形化操作。备份包放在
 `voices/backups/` 下的会保留;建议定期下载到其他机器存放。
 
-注册表持久化在 `/home/hwj/AI/tts-server/voices/registry.json`;管理界面里还可设置
+注册表持久化在 `./voices/registry.json`;管理界面里还可设置
 默认音色、默认流式模式(2/3)、默认语速、默认文本语言——按名调用缺省时生效。
 
 ---
@@ -461,9 +461,9 @@ curl -X POST "http://100.95.19.17:9873/voices/restore?overwrite=true" -F "file=@
 
 1. 准备 3~10 秒干净人声(无背景音乐/噪音)。**引擎硬性限制:时长必须在 3~10s 内**——上传瞬间即校验,超限直接拦截清空并提示"语音要求 3~10 秒",服务器路径注册同样校验;不知道台词?管理界面注册时点
    【🎙️ 自动识别转写】可自动生成转写文本和语言(建议人工核对一遍)
-2. **推荐:打开管理界面 http://100.95.19.17:9873/ui →「注册音色」**,
+2. **推荐:打开管理界面 http://<服务IP>:9873/ui →「注册音色」**,
    上传音频、填音色ID和转写,点注册即入库
-   (命令行方式也可 scp 到 `/home/hwj/AI/tts-server/voices/` 后 `POST /voices` 注册)
+   (命令行方式也可 scp 到 `./voices/` 后 `POST /voices` 注册)
 3. 调用时按名引用:
    ```json
    {"voice": "xiaoming", "text": "要合成的话"}
@@ -493,7 +493,7 @@ curl -X POST "http://100.95.19.17:9873/voices/restore?overwrite=true" -F "file=@
 ## 10. FAQ
 
 **Q: 参考音频可以用 HTTP URL 吗?**
-不行,`ref_audio_path` 只认服务端本地路径。先传到服务器 `/home/hwj/AI/tts-server/voices/`。
+不行,`ref_audio_path` 只认服务端本地路径。先传到服务器 `./voices/`。
 
 **Q: 英文/日文也用中文 BERT 吗?**
 BERT 特征仅用于中文;en/ja/ko 走各自 G2P,音色克隆不受影响,无需额外模型。
@@ -510,7 +510,7 @@ BERT 特征仅用于中文;en/ja/ko 走各自 G2P,音色克隆不受影响,无�
 非流式整段合成几千字会很久,客户端超时要放宽。
 
 **Q: 图形化测试?**
-`bash /home/hwj/AI/tts-server/start.sh` 一键拉起全部服务 → 管理界面 http://100.95.19.17:9873/ui(流式试音,支持选音色、进阶采样参数),测试页 http://100.95.19.17:9872
+`bash ./start.sh` 一键拉起全部服务 → 管理界面 http://<服务IP>:9873/ui(流式试音,支持选音色、进阶采样参数),测试页 http://<服务IP>:9872
 
 **Q: 服务怎么启动/停止/保活?**
 `start.sh` 一键启动(API+测试页+管理后台,自动预热三语);`stop.sh` 一键停止;
