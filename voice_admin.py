@@ -147,7 +147,11 @@ def _register_model(mid, gpt_path, sovits_path, note):
 def _load_weight_file(path):
     """加载权重文件, 自动补齐缺失的 2 字节 PK 头(GPT-SoVITS 分发约定)。
     返回 (dict 含 weight 键, None) 或 (None, 错误信息)。"""
-    import torch
+    import torch, sys
+    # 这些 ckpt/pth 反序列化时引用 GPT-SoVITS 仓库模块(如 utils), 需与其激活环境一致
+    for extra in (str(GPTSOVITS_DIR), str(GPTSOVITS_DIR / "GPT_SoVITS")):
+        if extra not in sys.path:
+            sys.path.insert(0, extra)
     with open(path, "rb") as f:
         meta = f.read(2)
         rest = f.read()
@@ -155,7 +159,7 @@ def _load_weight_file(path):
         if meta == b"PK":
             ck = torch.load(BytesIO(meta + rest), map_location="cpu", weights_only=False)
         else:
-            ck = torch.load(BytesIO(b"PK" + meta + rest), map_location="cpu", weights_only=False)
+            ck = torch.load(BytesIO(b"PK" + rest), map_location="cpu", weights_only=False)
     except Exception as e:
         return None, f"文件损坏或不是有效的 torch 权重: {type(e).__name__}: {e}"
     w = ck.get("weight") if isinstance(ck, dict) else None
