@@ -175,7 +175,18 @@ def activate_model(mid):
                        f"{r1.text[:120]} {r2.text[:120]}")
     reg["settings"]["active_model"] = mid
     save_reg(reg)
-    return True, f"已启用模型 '{mid}'(重启服务也会自动恢复)"
+    # 切换后自动预热: 用微小请求预编译新权重路径, 避免切换后首个真实请求变慢
+    try:
+        warm_ref = VOICES_DIR / "demo_female_zh.wav"
+        if warm_ref.exists():
+            requests.post(f"{API}/tts", timeout=180, json={
+                "text": "预热。", "text_lang": "zh",
+                "ref_audio_path": str(warm_ref),
+                "prompt_text": "希望你以后能够做的比我还好呦。",
+                "prompt_lang": "zh", "media_type": "raw", "streaming_mode": 3})
+    except Exception:
+        pass
+    return True, f"已启用模型 '{mid}'(已完成预热,重启服务也会自动恢复)"
 
 
 @app.get("/models")
@@ -894,6 +905,12 @@ def ui_restore(fpath, overwrite):
             f"跳过同名 {len(skipped)} 个 {skipped}"), ui_list(), _voice_choices_with_default()
 
 
+def ui_active_model():
+    mid = load_reg()["settings"].get("active_model", "base")
+    tag = "(官方底模, 音色库克隆模式)" if mid == "base" else "(微调模型, 专属音色模式)"
+    return f"**当前启用模型: `{mid}`** {tag}"
+
+
 def ui_m_list():
     return [[m["id"], m.get("gpt_path", ""), m.get("sovits_path", ""),
              m.get("note", ""), "✅ 当前启用" if m["active"] else ""] for m in list_models()]
@@ -913,7 +930,7 @@ def ui_m_activate(mid):
     ok, msg = activate_model(mid)
     if not ok:
         raise gr.Error(msg)
-    return msg + "(请搭配该音色对应的参考音频使用)", ui_m_list()
+    return msg + "(请搭配该音色对应的参考音频使用)", ui_m_list(), ui_active_model()
 
 
 def ui_m_del(mid):
@@ -937,6 +954,7 @@ def build_ui():
                 with gr.Column():
                     t_voice = gr.Dropdown(choices=[], value=None,
                                           label="选择音色", interactive=True)
+                    t_model = gr.Markdown(ui_active_model())
                     t_text = gr.Textbox(
                         label="要合成的文本",
                         value="你好,这是管理后台的流式试音,点击开始后声音马上播放。",
@@ -1071,7 +1089,7 @@ def build_ui():
                 m_del_btn = gr.Button("🗑️ 删除选中注册")
             m_out = gr.Markdown("")
             m_reg_btn.click(ui_m_register, [m_id, m_gpt, m_sovits, m_note], [m_out, m_tbl, m_pick])
-            m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl])
+            m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, t_model])
             m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
 
         with gr.Tab("💾 备份 / 恢复"):
@@ -1093,8 +1111,9 @@ def build_ui():
         with gr.Tab("📖 调用说明"):
             gr.Markdown(CALL_DOC)
         demo.load(lambda: (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
-                           ui_m_list(), gr.update(choices=[m["id"] for m in list_models()])),
-                  None, [lst, pick, t_voice, m_tbl, m_pick])
+                           ui_m_list(), gr.update(choices=[m["id"] for m in list_models()]),
+                           ui_active_model()),
+                  None, [lst, pick, t_voice, m_tbl, m_pick, t_model])
     return demo
 
 
