@@ -35,7 +35,7 @@
 | **9873** `/voices/{id}` | PATCH | 修改音色(改ID重命名 / 转写 / 语言 / 备注) |
 | **9873** `/voices/{id}/audio` | POST | 替换音色的参考音频(multipart,re_asr=true 自动重识别转写) |
 | **9873** `/models` 系列 | GET / POST / DELETE / POST activate | 微调模型注册表与热切换(见「微调模型管理」) |
-| **9873** `/models/upload` | POST(multipart) | **上传**微调模型对注册(gpt_file + sovits_file + id + note) |
+| **9873** `/models/upload` | POST(multipart) | **上传专属音色包**注册(gpt_file + sovits_file + ref_file + id, 转写可自动ASR) |
 | **9873** `/voices/{id}` PATCH | 可含 `model_id` | **音色绑定微调模型**:调用该音色自动切换模型,未绑定自动用 base |
 | **9873** `/ui` | GET | 管理界面(**流式试音**、注册/试听/删除音色、默认参数设置) |
 | **9873** `/asr` | POST | 参考音频自动转写(SenseVoiceSmall,zh/en/ja/ko/yue 自动检测语言) |
@@ -368,14 +368,18 @@ curl -X POST http://100.95.19.17:9873/asr \
 官方 webui 训练产物是**一对权重**(`GPT_SoVITS/logs/<实验名>/` 下的 `GPT-*.pth` 与 `SoVITS-*.pth`)。
 注册后一键启用/切回底模,走官方热切换端点,**无需重启服务**,重启后也会自动恢复启用的模型。
 
-### 两种注册方式
+### 专属音色包 = 模型对 + 捆绑参考音频
 
-**① 网页/接口上传(推荐)**:管理界面直接上传两个权重文件;接口版:
+注册一个微调模型时**同时上传该说话人的参考音频(3~10s)**,转写可自动 ASR 识别——
+模型与声音身份捆绑成一个"专属音色包",启用即用,无需再去音色库配对。
+
+**① 网页/接口上传(推荐)**:管理界面「🧠 微调模型」上传三个文件即可;接口版:
 
 ```bash
 curl -X POST http://100.95.19.17:9873/models/upload \
   -F "id=anke_ft" -F "note=安可微调" \
-  -F "gpt_file=@GPT-anke.pth" -F "sovits_file=@SoVITS-anke.pth"
+  -F "gpt_file=@GPT-anke.pth" -F "sovits_file=@SoVITS-anke.pth" \
+  -F "ref_file=@anke_ref.wav" -F "re_asr=true"
 ```
 
 **② 服务端路径注册(高级)**:
@@ -405,8 +409,17 @@ curl -X POST http://100.95.19.17:9873/tts -d '{"voice":"其他音色","text":"..
 
 切换含权重加载+自动预热,约数秒;**频繁在绑定/未绑定音色间交替会反复热切换,建议分批使用**。
 
-注意:① 同一时间只有一个模型生效,切换请在无合成任务时进行;② 微调模型需基于
-v2ProPlus 底模训练;③ 微调音色请搭配**对应说话人**的参考音频(零样本音色库基于底模)。
+### 两种模式(自动路由,设备无感)
+
+| 调用方式 | 模式 | 引擎行为 |
+|---|---|---|
+| `{"voice":"音色ID","text":"..."}` | 克隆模式 | 自动确保 base 底模 + 音色库参考音频 |
+| `{"model":"微调模型ID","text":"..."}` | 专属模式 | 自动切换微调模型 + 用其捆绑参考音频(voice 忽略) |
+| 音色绑定了模型(PATCH model_id) | 自动 | 调用该音色切绑定模型,其他音色切回 base |
+
+切换含权重加载+自动预热(约数秒),**频繁交替会反复热切换,建议分批使用**。
+注意:① 同一时间只有一个模型生效;② 微调模型需基于 v2ProPlus 底模训练;③ 专属模式的
+声音身份来自注册时捆绑的参考音频。
 
 ### 9873 `/v1/audio/speech` — OpenAI TTS 兼容端点
 
@@ -419,7 +432,7 @@ curl -X POST http://100.95.19.17:9873/v1/audio/speech \
   -o out.mp3
 ```
 
-- `voice` 填注册表音色 ID;**填未知值(如客户端默认的 alloy)自动回退默认音色**,开箱即用
+- `voice` 填注册表音色 ID(克隆模式);也可传 `model` 字段填**微调模型 ID** 进入专属音色模式(自动切模型+用注册时捆绑的参考音频,忽略 voice);填未知值自动回退默认音色
 - `response_format`:mp3(默认)/ wav / flac / opus / aac / pcm(mp3 等 Format 走 ffmpeg 转码,秒级)
 - `speed` 0.25~4.0;`model` 参数忽略;该端点为整段返回(OpenAI 协议本身不流式),
   需要流式低延迟请用 `/tts`

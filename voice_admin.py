@@ -143,8 +143,9 @@ def _register_model(mid, gpt_path, sovits_path, note):
     return _register_model_files(mid, gpt_path, sovits_path, note)
 
 
-def _register_model_files(mid, gpt_src, sovits_src, note):
-    """从(上传的)文件注册微调模型: 校验后复制到 fine_tuned_models/<id>/ 并入库。"""
+def _register_model_files(mid, gpt_src, sovits_src, note, ref_src=None,
+                          prompt_text=None, prompt_lang=None, re_asr=True):
+    """从(上传的)文件注册微调模型: 模型对 + 捆绑参考音频 → fine_tuned_models/<id>/ 并入库。"""
     mid = re.sub(r'[\\/:*?"<>|\s]+', "_", (mid or "").strip())
     if not mid or mid == "base":
         return False, "模型ID 无效(不能为 base 或空)"
@@ -156,6 +157,11 @@ def _register_model_files(mid, gpt_src, sovits_src, note):
             return False, f"{kind} 权重文件过小(<1MB),不像有效权重"
         if Path(p).suffix.lower() not in allowed:
             return False, f"{kind} 权重格式应为 {'/'.join(allowed)},收到 {Path(p).suffix}"
+    if not ref_src or not Path(ref_src).exists():
+        return False, "参考音频缺失(要求 3~10 秒, 与模型说话人一致)"
+    rdur = sf.info(str(ref_src)).duration
+    if rdur < 3.05 or rdur > 9.9:
+        return False, f"❌ 参考音频时长 {rdur:.1f} 秒,要求 3~10 秒(引擎硬性限制)"
     reg = load_reg()
     if mid in reg["models"]:
         return False, f"模型 '{mid}' 已注册"
@@ -163,21 +169,60 @@ def _register_model_files(mid, gpt_src, sovits_src, note):
     mdir.mkdir(parents=True, exist_ok=True)
     gdst = mdir / f"GPT{Path(gpt_src).suffix.lower()}"
     sdst = mdir / "SoVITS.pth"
+    rdst = mdir / "ref.wav"
     shutil.copy(str(gpt_src), str(gdst))
     shutil.copy(str(sovits_src), str(sdst))
+    shutil.copy(str(ref_src), str(rdst))
+    pt, pl = (prompt_text or "").strip(), (prompt_lang or "zh")
+    asr_note = ""
+    if re_asr:
+        try:
+            text, lang = transcribe_file(str(rdst))
+            pt, pl = text, lang
+            asr_note = ",转写由ASR自动识别"
+        except Exception as e:
+            asr_note = f"(ASR 识别失败,使用手动转写: {e})"
     reg["models"][mid] = {"gpt_path": str(gdst), "sovits_path": str(sdst),
-                          "note": note or "", "created_at": str(date.today())}
+                          "ref_audio": str(rdst), "prompt_text": pt, "prompt_lang": pl,
+                          "note": (note or "") + asr_note, "duration": round(rdur, 2),
+                          "created_at": str(date.today())}
     save_reg(reg)
-    return True, f"模型 '{mid}' 已注册(文件已存入服务端 {mdir})"
+    return True, f"模型 '{mid}' 已注册(模型+参考音频已存入服务端 {mdir})"
+
+
+def _resolve_target(reg, voice_name="", req_model=""):
+    """统一路由: 显式 model > 音色绑定的 model_id > base(克隆模式)。
+    返回 (ref_dict{file,prompt_text,prompt_lang}, desired_model, err)。"""
+    st = reg["settings"]
+    req_model = (req_model or "").strip()
+    v = reg["voices"].get(voice_name or "")
+    if v is None and not req_model:
+        v = reg["voices"].get(st.get("default_voice") or "")
+    desired = req_model or (v or {}).get("model_id") or "base"
+    if desired == "base":
+        if not v:
+            return None, "base", "克隆模式需要 voice 参数(或传 model 参数使用微调模型)"
+        return {"file": v["file"], "prompt_text": v.get("prompt_text", ""),
+                "prompt_lang": v.get("prompt_lang", "zh")}, "base", None
+    m = reg["models"].get(desired)
+    if not m:
+        return None, desired, f"model '{desired}' not registered"
+    if not m.get("ref_audio") or not Path(m["ref_audio"]).exists():
+        return None, desired, f"模型 '{desired}' 未捆绑参考音频,请重新上传注册"
+    return {"file": m["ref_audio"], "prompt_text": m.get("prompt_text", ""),
+            "prompt_lang": m.get("prompt_lang", "zh")}, desired, None
+
+
+def _ensure_active_model(desired):
+    if load_reg()["settings"].get("active_model", "base") == desired:
+        return True, "already"
+    return activate_model(desired)
 
 
 def _ensure_model_for_voice(v):
     """按音色绑定的模型自动路由: 绑定微调模型→热切换之; 未绑定→用 base。
     返回 (ok, msg)。频繁在两类音色间交替会触发反复热切换(每次数秒)。"""
-    desired = (v or {}).get("model_id") or "base"
-    if load_reg()["settings"].get("active_model", "base") == desired:
-        return True, "already"
-    return activate_model(desired)
+    return _ensure_active_model((v or {}).get("model_id") or "base")
 
 
 def activate_model(mid):
@@ -242,21 +287,30 @@ def models_del(mid: str):
 
 
 @app.post("/models/upload")
-async def models_upload(gpt_file: UploadFile, sovits_file: UploadFile,
-                        id: str = Form(""), note: str = Form("")):
-    """上传微调模型对(multipart): gpt_file(.pth/.ckpt) + sovits_file(.pth)"""
+async def models_upload(gpt_file: UploadFile, sovits_file: UploadFile, ref_file: UploadFile,
+                        id: str = Form(""), note: str = Form(""),
+                        prompt_text: str = Form(""), prompt_lang: str = Form("zh"),
+                        re_asr: bool = Form(True)):
+    """上传专属音色包(multipart): gpt_file + sovits_file + ref_file(3~10s 参考音频)。
+    prompt_text 留空且 re_asr=true 时自动 ASR 识别转写。"""
     stamp = int(time.time() * 1000)
     tmp_g = f"/tmp/up_gpt_{stamp}{Path(gpt_file.filename or 'g.pth').suffix or '.pth'}"
     tmp_s = f"/tmp/up_sov_{stamp}.pth"
+    tmp_r = f"/tmp/up_ref_{stamp}.wav"
     with open(tmp_g, "wb") as f:
         shutil.copyfileobj(gpt_file.file, f)
     with open(tmp_s, "wb") as f:
         shutil.copyfileobj(sovits_file.file, f)
+    with open(tmp_r, "wb") as f:
+        shutil.copyfileobj(ref_file.file, f)
     try:
-        ok, msg = await run_in_threadpool(_register_model_files, id, tmp_g, tmp_s, note)
+        ok, msg = await run_in_threadpool(
+            _register_model_files, id, tmp_g, tmp_s, note,
+            ref_src=tmp_r, prompt_text=prompt_text,
+            prompt_lang=prompt_lang, re_asr=re_asr)
     finally:
-        Path(tmp_g).unlink(missing_ok=True)
-        Path(tmp_s).unlink(missing_ok=True)
+        for t in (tmp_g, tmp_s, tmp_r):
+            Path(t).unlink(missing_ok=True)
     return JSONResponse(status_code=200 if ok else 400, content={"message": msg})
 
 
@@ -286,18 +340,22 @@ async def openai_speech(request: Request):
         fmt = "mp3"
     reg = load_reg()
     st = reg["settings"]
-    v = reg["voices"].get(body.get("voice") or "") or reg["voices"].get(st.get("default_voice") or "")
-    if not v:
-        return JSONResponse(status_code=400, content={"message": "no voice registered"})
-    ok, mmsg = await run_in_threadpool(_ensure_model_for_voice, v)
+    # voice 可填音色 ID(克隆模式), 也可填微调模型 ID(专属音色模式, 用其捆绑参考音频)
+    ref, desired, err = _resolve_target(reg, body.get("voice") or "", body.get("model") or "")
+    if err and (body.get("voice") or ""):
+        # OpenAI 兼容: 未知音色名(如客户端默认 alloy)回退默认音色
+        ref, desired, err = _resolve_target(reg, "", body.get("model") or "")
+    if err:
+        return JSONResponse(status_code=400, content={"message": err})
+    ok, mmsg = await run_in_threadpool(_ensure_active_model, desired)
     if not ok:
         return JSONResponse(status_code=500, content={"message": f"模型自动切换失败: {mmsg}"})
     payload = {
         "text": text,
         "text_lang": body.get("text_lang") or st.get("default_text_lang", "zh"),
-        "ref_audio_path": v["file"],
-        "prompt_text": v.get("prompt_text", ""),
-        "prompt_lang": v.get("prompt_lang", "zh"),
+        "ref_audio_path": ref["file"],
+        "prompt_text": ref.get("prompt_text", ""),
+        "prompt_lang": ref.get("prompt_lang", "zh"),
         "streaming_mode": 0, "speed_factor": float(body.get("speed", 1.0)),
         "media_type": "wav", "text_split_method": "cut5",
     }
@@ -443,22 +501,25 @@ async def tts_proxy(request: Request):
     reg = load_reg()
     st = reg["settings"]
 
-    if body.get("voice"):
-        v = reg["voices"].get(body["voice"])
-        if not v:
-            return JSONResponse(status_code=400, content={
-                "message": f"voice '{body['voice']}' not registered. GET /voices 查看可用音色"})
-        if not body.get("text"):
+    if body.get("ref_audio_path"):
+        # 透传模式: 带 ref_audio_path 的完整 9880 请求体原样转发
+        payload = body
+    else:
+        if not (body.get("text") or "").strip():
             return JSONResponse(status_code=400, content={"message": "text is required"})
-        ok, mmsg = await run_in_threadpool(_ensure_model_for_voice, v)
+        # 统一路由: 显式 model > 音色绑定的 model_id > base(克隆模式)
+        ref, desired, err = _resolve_target(reg, body.get("voice") or "", body.get("model") or "")
+        if err:
+            return JSONResponse(status_code=400, content={"message": err})
+        ok, mmsg = await run_in_threadpool(_ensure_active_model, desired)
         if not ok:
             return JSONResponse(status_code=500, content={"message": f"模型自动切换失败: {mmsg}"})
         payload = {
             "text": body["text"],
             "text_lang": body.get("text_lang") or st.get("default_text_lang", "zh"),
-            "ref_audio_path": v["file"],
-            "prompt_text": v.get("prompt_text", ""),
-            "prompt_lang": v.get("prompt_lang", "zh"),
+            "ref_audio_path": ref["file"],
+            "prompt_text": ref.get("prompt_text", ""),
+            "prompt_lang": ref.get("prompt_lang", "zh"),
             "media_type": body.get("media_type", "wav"),
             "streaming_mode": int(body.get("streaming_mode", st.get("default_streaming_mode", 3))),
             "speed_factor": float(body.get("speed", st.get("default_speed", 1.0))),
@@ -471,8 +532,6 @@ async def tts_proxy(request: Request):
         for k in ("top_k", "top_p", "temperature", "repetition_penalty", "fragment_interval"):
             if body.get(k) is not None:
                 payload[k] = body[k]
-    else:
-        payload = body  # 透传完整 api_v2 请求体
 
     def gen(r):
         for chunk in r.iter_content(chunk_size=65536):
@@ -594,24 +653,24 @@ def _register(voice_id, audio_path, prompt_text, prompt_lang, note, copy_file=Tr
 # ---------------- 流式试音(选音色 → 输文本 → 立即播放) ----------------
 
 def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalty,
-                    top_k, top_p, temperature, text_split_method):
+                    top_k, top_p, temperature, text_split_method, use_model):
     reg = load_reg()
     st = reg["settings"]
-    voice = voice or st.get("default_voice", "")
-    v = reg["voices"].get(voice)
-    if not v:
-        raise gr.Error(f"音色 '{voice}' 未注册,请先在「注册音色」页添加并刷新")
     if not text or not text.strip():
         raise gr.Error("请输入要合成的文本")
-    ok, mmsg = _ensure_model_for_voice(v)
+    # 统一路由: 使用模型选 base → 音色库克隆; 选微调模型 → 专属音色(捆绑参考音频)
+    ref, desired, err = _resolve_target(reg, voice or "", use_model or "")
+    if err:
+        raise gr.Error(err)
+    ok, mmsg = _ensure_active_model(desired)
     if not ok:
         raise gr.Error(f"模型自动切换失败: {mmsg}")
     payload = {
         "text": text,
         "text_lang": text_lang or st.get("default_text_lang", "zh"),
-        "ref_audio_path": v["file"],
-        "prompt_text": v.get("prompt_text", ""),
-        "prompt_lang": v.get("prompt_lang", "zh"),
+        "ref_audio_path": ref["file"],
+        "prompt_text": ref.get("prompt_text", ""),
+        "prompt_lang": ref.get("prompt_lang", "zh"),
         "media_type": "wav",
         "streaming_mode": int(mode),
         "speed_factor": float(speed),
@@ -666,7 +725,8 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
         raise gr.Error("服务端没有返回任何音频。常见原因:参考音频时长超出 3~10s 硬性限制、"
                        "文件损坏或转写不匹配,详情查看 api_v2.log")
 
-    stats = (f"音色 **{voice}** | 首包 **{first*1000:.0f} ms** | "
+    mode_cn = "克隆模式(底模)" if desired == "base" else f"专属模式(模型 {desired})"
+    stats = (f"**{mode_cn}** | 首包 **{first*1000:.0f} ms** | "
              f"时长 **{n_audio/(sr*2):.2f} s** | 总耗时 **{time.perf_counter()-t0:.2f} s** | {sr} Hz")
     yield None, stats
 
@@ -982,8 +1042,10 @@ def ui_m_list():
              m.get("note", ""), "✅ 当前启用" if m["active"] else ""] for m in list_models()]
 
 
-def ui_m_register(mid, gpt_path, sovits_path, note):
-    ok, msg = _register_model_files(mid, gpt_path, sovits_path, note)
+def ui_m_register(mid, gpt_path, sovits_path, ref_path, note, ptext, plang, re_asr):
+    ok, msg = _register_model_files(mid, gpt_path, sovits_path, note,
+                                    ref_src=ref_path, prompt_text=ptext,
+                                    prompt_lang=plang, re_asr=bool(re_asr))
     if not ok:
         raise gr.Error(msg)
     ids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
@@ -1021,6 +1083,10 @@ def build_ui():
                     t_voice = gr.Dropdown(choices=[], value=None,
                                           label="选择音色", interactive=True)
                     t_model = gr.Markdown(ui_active_model())
+                    t_umodel = gr.Dropdown(
+                        choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                        value="base",
+                        label="使用模型(base=音色库克隆 | 选微调模型=专属音色,自动切换)")
                     t_text = gr.Textbox(
                         label="要合成的文本",
                         value="你好,这是管理后台的流式试音,点击开始后声音马上播放。",
@@ -1058,7 +1124,7 @@ def build_ui():
                     t_stats = gr.Markdown("")
             t_btn.click(tts_stream_play,
                         [t_voice, t_text, t_lang, t_mode, t_speed,
-                         a_seed, a_rep, a_topk, a_topp, a_temp, a_cut],
+                         a_seed, a_rep, a_topk, a_topp, a_temp, a_cut, t_umodel],
                         [t_audio, t_stats])
 
         with gr.Tab("➕ 注册音色"):
@@ -1148,17 +1214,25 @@ def build_ui():
                     m_id = gr.Textbox(label="模型ID(如 anke_ft)", lines=1)
                     m_gpt = gr.File(label="GPT 权重文件(.pth/.ckpt)", file_types=[".pth", ".ckpt"])
                     m_sovits = gr.File(label="SoVITS 权重文件(.pth)", file_types=[".pth"])
+                    m_ref = gr.Audio(sources=["upload"], type="filepath",
+                                     label="捆绑参考音频(3~10s, 该说话人语料)")
                     m_note = gr.Textbox(label="备注", lines=1)
                 with gr.Column():
                     m_tbl = gr.Dataframe(headers=["模型ID", "GPT权重", "SoVITS权重", "备注", "状态"],
                                          interactive=False, wrap=True)
+                    m_ptext = gr.Textbox(label="参考音频转写(留空=自动ASR识别)", lines=2)
+                    m_lang = gr.Dropdown(choices=LANG_FULL, value="zh",
+                                         label="参考音频语言(自动识别时忽略)")
+                    m_asr = gr.Checkbox(value=True, label="自动ASR识别转写")
                     m_pick = gr.Dropdown(choices=[], label="选择要启用的模型(含 base 底模)")
             with gr.Row():
                 m_reg_btn = gr.Button("📥 注册模型")
                 m_act_btn = gr.Button("🚀 启用选中模型", variant="primary")
                 m_del_btn = gr.Button("🗑️ 删除选中注册")
             m_out = gr.Markdown("")
-            m_reg_btn.click(ui_m_register, [m_id, m_gpt, m_sovits, m_note], [m_out, m_tbl, m_pick])
+            m_reg_btn.click(ui_m_register,
+                            [m_id, m_gpt, m_sovits, m_ref, m_note, m_ptext, m_lang, m_asr],
+                            [m_out, m_tbl, m_pick])
             m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, t_model])
             m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
 
@@ -1184,8 +1258,10 @@ def build_ui():
                            ui_m_list(), gr.update(choices=[m["id"] for m in list_models()]),
                            ui_active_model(),
                            gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                                     value="base"),
+                           gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
                                      value="base")),
-                  None, [lst, pick, t_voice, m_tbl, m_pick, t_model, e_model])
+                  None, [lst, pick, t_voice, m_tbl, m_pick, t_model, e_model, t_umodel])
     return demo
 
 
