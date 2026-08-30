@@ -1,0 +1,17 @@
+{
+  "settings": {
+    "default_voice": "",
+    "default_streaming_mode": 3,
+    "default_speed": 1.0,
+    "default_text_lang": "zh"
+  },
+  "voices": {
+    "demo_female_zh": {
+      "file": "voices/demo_female_zh.wav",
+      "prompt_text": "希望你以后能够做的比我还好呦。",
+      "prompt_lang": "zh",
+      "note": "内置示例音色(CosyVoice 公开示例音频)",
+      "created_at": "2026-08-29"
+    }
+  }
+}

@@ -1,0 +1,24 @@
+# 官方仓库与模型权重(另行克隆/下载, 见 README 部署指南)
+GPT-SoVITS/
+VoxCPM/
+models/
+pipcache/
+downloads/
+
+# 运行时产物
+*.log
+*.pid
+.manually_stopped
+__pycache__/
+
+# 音色数据(个人声音素材与注册表含隐私, 不入库; 上传自己的音频并通过界面注册)
+voices/*.wav
+voices/backups/
+voices/registry.json
+
+# 测试产物
+bench/bench_out*/
+bench/*.wav
+
+# 内置公开示例音频(CosyVoice 采样, 供新部署测试)
+!voices/demo_female_zh.wav
