@@ -22,3 +22,4 @@ bench/*.wav
 
 # 内置公开示例音频(CosyVoice 采样, 供新部署测试)
 !voices/demo_female_zh.wav
+fine_tuned_models/

@@ -175,7 +175,7 @@ def _register_model_files(mid, gpt_src, sovits_src, note, ref_src=None,
     shutil.copy(str(ref_src), str(rdst))
     pt, pl = (prompt_text or "").strip(), (prompt_lang or "zh")
     asr_note = ""
-    if re_asr:
+    if re_asr and not pt:
         try:
             text, lang = transcribe_file(str(rdst))
             pt, pl = text, lang
@@ -1030,6 +1030,25 @@ def ui_m_list():
              m.get("note", ""), "✅ 当前启用" if m["active"] else ""] for m in list_models()]
 
 
+def ui_asr_for_model(ref_path):
+    """微调模型页: 参考音频上传后立即自动识别转写+语言, 回填表单。"""
+    if not ref_path:
+        raise gr.Error("尚未检测到上传的参考音频")
+    try:
+        dur = sf.info(str(ref_path)).duration
+        if dur < 3.05 or dur > 9.9:
+            raise gr.Error(f"❌ 参考音频时长 {dur:.1f} 秒,要求 3~10 秒,请更换后重新上传")
+        text, lang = transcribe_file(str(ref_path))
+    except gr.Error:
+        raise
+    except Exception as e:
+        raise gr.Error(f"识别失败: {e}")
+    if not text:
+        raise gr.Error("未识别到语音内容")
+    upd = gr.update(value=lang)
+    return text, upd, f"🎙️ 转写已自动识别(prompt_lang=**{lang}**, {dur:.1f}s): {text}\n\n请填写模型ID后点【注册模型】。"
+
+
 def ui_m_register(mid, gpt_path, sovits_path, ref_path, note, ptext, plang, re_asr):
     ok, msg = _register_model_files(mid, gpt_path, sovits_path, note,
                                     ref_src=ref_path, prompt_text=ptext,
@@ -1206,6 +1225,7 @@ def build_ui():
             m_reg_btn.click(ui_m_register,
                             [m_id, m_gpt, m_sovits, m_ref, m_note, m_ptext, m_lang, m_asr],
                             [m_out, m_tbl, m_pick])
+            m_ref.upload(ui_asr_for_model, [m_ref], [m_ptext, m_lang, m_out])
             m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, t_model, t_umodel])
             m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
 
