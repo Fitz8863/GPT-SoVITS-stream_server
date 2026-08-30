@@ -22,13 +22,14 @@ import gradio as gr
 import numpy as np
 import requests
 import soundfile as sf
-from fastapi import FastAPI, Request, UploadFile
+from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from starlette.concurrency import run_in_threadpool
 
 VOICES_DIR = Path("/home/hwj/AI/tts-server/voices")
 BASE_DIR = Path(__file__).resolve().parent
 GPTSOVITS_DIR = BASE_DIR / "GPT-SoVITS"
+MODELS_DIR = BASE_DIR / "fine_tuned_models"
 REG_PATH = VOICES_DIR / "registry.json"
 API = "http://127.0.0.1:9880"
 _lang_lock = threading.Lock()
@@ -139,17 +140,44 @@ def _register_model(mid, gpt_path, sovits_path, note):
         return False, "模型ID 无效(不能为 base 或空)"
     gpt_path = _resolve_model_path(gpt_path)
     sovits_path = _resolve_model_path(sovits_path)
-    if not gpt_path or not Path(gpt_path).exists():
-        return False, f"GPT 权重不存在: {gpt_path}"
-    if not sovits_path or not Path(sovits_path).exists():
-        return False, f"SoVITS 权重不存在: {sovits_path}"
+    return _register_model_files(mid, gpt_path, sovits_path, note)
+
+
+def _register_model_files(mid, gpt_src, sovits_src, note):
+    """从(上传的)文件注册微调模型: 校验后复制到 fine_tuned_models/<id>/ 并入库。"""
+    mid = re.sub(r'[\\/:*?"<>|\s]+', "_", (mid or "").strip())
+    if not mid or mid == "base":
+        return False, "模型ID 无效(不能为 base 或空)"
+    checks = [("GPT", gpt_src, (".pth", ".ckpt")), ("SoVITS", sovits_src, (".pth",))]
+    for kind, p, allowed in checks:
+        if not p or not Path(p).exists():
+            return False, f"{kind} 权重文件缺失"
+        if Path(p).stat().st_size < 1_000_000:
+            return False, f"{kind} 权重文件过小(<1MB),不像有效权重"
+        if Path(p).suffix.lower() not in allowed:
+            return False, f"{kind} 权重格式应为 {'/'.join(allowed)},收到 {Path(p).suffix}"
     reg = load_reg()
     if mid in reg["models"]:
         return False, f"模型 '{mid}' 已注册"
-    reg["models"][mid] = {"gpt_path": gpt_path, "sovits_path": sovits_path,
+    mdir = MODELS_DIR / mid
+    mdir.mkdir(parents=True, exist_ok=True)
+    gdst = mdir / f"GPT{Path(gpt_src).suffix.lower()}"
+    sdst = mdir / "SoVITS.pth"
+    shutil.copy(str(gpt_src), str(gdst))
+    shutil.copy(str(sovits_src), str(sdst))
+    reg["models"][mid] = {"gpt_path": str(gdst), "sovits_path": str(sdst),
                           "note": note or "", "created_at": str(date.today())}
     save_reg(reg)
-    return True, f"模型 '{mid}' 已注册"
+    return True, f"模型 '{mid}' 已注册(文件已存入服务端 {mdir})"
+
+
+def _ensure_model_for_voice(v):
+    """按音色绑定的模型自动路由: 绑定微调模型→热切换之; 未绑定→用 base。
+    返回 (ok, msg)。频繁在两类音色间交替会触发反复热切换(每次数秒)。"""
+    desired = (v or {}).get("model_id") or "base"
+    if load_reg()["settings"].get("active_model", "base") == desired:
+        return True, "already"
+    return activate_model(desired)
 
 
 def activate_model(mid):
@@ -213,6 +241,25 @@ def models_del(mid: str):
     return {"message": f"已删除注册 '{mid}'(权重文件保留)"}
 
 
+@app.post("/models/upload")
+async def models_upload(gpt_file: UploadFile, sovits_file: UploadFile,
+                        id: str = Form(""), note: str = Form("")):
+    """上传微调模型对(multipart): gpt_file(.pth/.ckpt) + sovits_file(.pth)"""
+    stamp = int(time.time() * 1000)
+    tmp_g = f"/tmp/up_gpt_{stamp}{Path(gpt_file.filename or 'g.pth').suffix or '.pth'}"
+    tmp_s = f"/tmp/up_sov_{stamp}.pth"
+    with open(tmp_g, "wb") as f:
+        shutil.copyfileobj(gpt_file.file, f)
+    with open(tmp_s, "wb") as f:
+        shutil.copyfileobj(sovits_file.file, f)
+    try:
+        ok, msg = await run_in_threadpool(_register_model_files, id, tmp_g, tmp_s, note)
+    finally:
+        Path(tmp_g).unlink(missing_ok=True)
+        Path(tmp_s).unlink(missing_ok=True)
+    return JSONResponse(status_code=200 if ok else 400, content={"message": msg})
+
+
 @app.post("/models/{mid}/activate")
 async def models_activate(mid: str):
     ok, msg = await run_in_threadpool(activate_model, mid)
@@ -242,6 +289,9 @@ async def openai_speech(request: Request):
     v = reg["voices"].get(body.get("voice") or "") or reg["voices"].get(st.get("default_voice") or "")
     if not v:
         return JSONResponse(status_code=400, content={"message": "no voice registered"})
+    ok, mmsg = await run_in_threadpool(_ensure_model_for_voice, v)
+    if not ok:
+        return JSONResponse(status_code=500, content={"message": f"模型自动切换失败: {mmsg}"})
     payload = {
         "text": text,
         "text_lang": body.get("text_lang") or st.get("default_text_lang", "zh"),
@@ -343,9 +393,10 @@ def _restore_zip(zpath, overwrite=False):
 
 @app.patch("/voices/{voice_id}")
 async def voices_edit_api(voice_id: str, body: dict):
-    """修改音色: body 可含 voice_id(改名)/prompt_text/prompt_lang/note"""
+    """修改音色: body 可含 voice_id(改名)/prompt_text/prompt_lang/note/model_id(绑定微调模型)"""
     ok, msg, final_id = _edit_voice(voice_id, body.get("voice_id"), body.get("prompt_text"),
-                                    body.get("prompt_lang"), body.get("note"))
+                                    body.get("prompt_lang"), body.get("note"),
+                                    body.get("model_id"))
     if not ok:
         return JSONResponse(status_code=400, content={"message": msg})
     return {"message": msg, "voice_id": final_id}
@@ -399,6 +450,9 @@ async def tts_proxy(request: Request):
                 "message": f"voice '{body['voice']}' not registered. GET /voices 查看可用音色"})
         if not body.get("text"):
             return JSONResponse(status_code=400, content={"message": "text is required"})
+        ok, mmsg = await run_in_threadpool(_ensure_model_for_voice, v)
+        if not ok:
+            return JSONResponse(status_code=500, content={"message": f"模型自动切换失败: {mmsg}"})
         payload = {
             "text": body["text"],
             "text_lang": body.get("text_lang") or st.get("default_text_lang", "zh"),
@@ -549,6 +603,9 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
         raise gr.Error(f"音色 '{voice}' 未注册,请先在「注册音色」页添加并刷新")
     if not text or not text.strip():
         raise gr.Error("请输入要合成的文本")
+    ok, mmsg = _ensure_model_for_voice(v)
+    if not ok:
+        raise gr.Error(f"模型自动切换失败: {mmsg}")
     payload = {
         "text": text,
         "text_lang": text_lang or st.get("default_text_lang", "zh"),
@@ -777,18 +834,22 @@ def ui_pick_full(voice_id):
     reg = load_reg()
     v = reg["voices"].get(voice_id)
     if not v:
-        return None, "", gr.update(), "", ""
+        return None, "", gr.update(), "", "", gr.update(value="base")
     return (v.get("file"), v.get("prompt_text", ""),
             gr.update(value=v.get("prompt_lang", "zh")),
-            voice_id, v.get("note", ""))
+            voice_id, v.get("note", ""),
+            gr.update(value=v.get("model_id", "base")))
 
 
-def _edit_voice(voice_id, new_id, prompt_text, prompt_lang, note):
-    """修改音色: 改ID(重命名)/转写/语言/备注。返回 (ok, msg, 最终ID)"""
+def _edit_voice(voice_id, new_id, prompt_text, prompt_lang, note, model_id=None):
+    """修改音色: 改ID(重命名)/转写/语言/备注/绑定微调模型。返回 (ok, msg, 最终ID)"""
     reg = load_reg()
     if voice_id not in reg["voices"]:
         return False, f"音色 '{voice_id}' 不存在", voice_id
     v = reg["voices"][voice_id]
+    if model_id is not None and model_id != "":
+        if model_id != "base" and model_id not in reg["models"]:
+            return False, f"绑定的模型 '{model_id}' 未注册", voice_id
     final_id = voice_id
     target = (new_id or "").strip()
     if target and target != voice_id:
@@ -813,12 +874,17 @@ def _edit_voice(voice_id, new_id, prompt_text, prompt_lang, note):
         v["prompt_lang"] = prompt_lang
     if note is not None:
         v["note"] = note
+    if model_id is not None:
+        if model_id == "" or model_id == "base":
+            v.pop("model_id", None)
+        else:
+            v["model_id"] = model_id
     save_reg(reg)
     return True, f"音色 '{final_id}' 已更新", final_id
 
 
-def ui_save_edit(voice_id, new_id, prompt_text, prompt_lang, note):
-    ok, msg, final_id = _edit_voice(voice_id, new_id, prompt_text, prompt_lang, note)
+def ui_save_edit(voice_id, new_id, prompt_text, prompt_lang, note, model_id):
+    ok, msg, final_id = _edit_voice(voice_id, new_id, prompt_text, prompt_lang, note, model_id)
     if not ok:
         raise gr.Error(msg)
     ids = sorted(load_reg()["voices"].keys())
@@ -917,10 +983,10 @@ def ui_m_list():
 
 
 def ui_m_register(mid, gpt_path, sovits_path, note):
-    ok, msg = _register_model(mid, gpt_path, sovits_path, note)
+    ok, msg = _register_model_files(mid, gpt_path, sovits_path, note)
     if not ok:
         raise gr.Error(msg)
-    ids = [m["id"] for m in list_models() if m["id"] != "base"]
+    ids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
     return msg, ui_m_list(), gr.update(choices=ids, value=mid)
 
 
@@ -1032,6 +1098,9 @@ def build_ui():
                 e_prompt = gr.Textbox(label="转写文本(可修改)", lines=2)
                 with gr.Column():
                     e_lang = gr.Dropdown(choices=LANG_FULL, label="参考音频语言(可修改)")
+                    e_model = gr.Dropdown(
+                        choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                        value="base", label="绑定微调模型(调用该音色时自动切换;base=克隆模式)")
                     e_newid = gr.Textbox(label="新音色ID(留空=不改名)", lines=1)
                     e_note = gr.Textbox(label="备注(可修改)", lines=1)
             with gr.Row():
@@ -1042,10 +1111,10 @@ def build_ui():
                 del_out = gr.Markdown("")
             refresh_btn.click(lambda: (ui_list(), gr.update(choices=[r[0] for r in ui_list()])),
                               None, [lst, pick])
-            pick.change(ui_pick_full, [pick], [play, e_prompt, e_lang, e_newid, e_note])
+            pick.change(ui_pick_full, [pick], [play, e_prompt, e_lang, e_newid, e_note, e_model])
             repl_btn.click(ui_replace_audio, [pick, e_audio, e_asr],
                            [edit_out, play, e_prompt, e_lang, lst])
-            edit_btn.click(ui_save_edit, [pick, e_newid, e_prompt, e_lang, e_note],
+            edit_btn.click(ui_save_edit, [pick, e_newid, e_prompt, e_lang, e_note, e_model],
                            [edit_out, lst, pick, t_voice])
             del_btn.click(ui_delete, [pick], [del_out, lst])
 
@@ -1069,15 +1138,16 @@ def build_ui():
         with gr.Tab("🧠 微调模型"):
             gr.Markdown(
                 "### 🧠 微调(专属音色)模型管理\n"
-                "官方 webui 训练产物是**一对权重**(`GPT_SoVITS/logs/<实验名>/` 下的 `GPT-*.pth` 与 `SoVITS-*.pth`,"
-                "建议先把要用的迭代拷到固定目录再注册)。\n"
-                "注册后可随时一键启用/切回底模,重启服务自动恢复;**同一时间只有一个模型生效**,"
-                "微调模型请搭配对应说话人的参考音频;切换请在无合成任务时进行。微调需基于 v2ProPlus 底模训练。")
+                "官方 webui 训练产物是**一对权重**(`GPT_SoVITS/logs/<实验名>/` 下的 `GPT-*.pth` 与 `SoVITS-*.pth`)。\n"
+                "**① 上传注册**权重对;**② 到「音色列表 → 编辑」给音色绑定该模型**——之后调用绑定的音色会"
+                "**自动切换**到此模型,调用未绑定的音色(克隆模式)**自动切回 base 底模**,设备端无感。\n"
+                "注意:**同一时间只有一个模型生效**,两类音色频繁交替调用会反复热切换(每次数秒),建议分批使用;"
+                "重启自动恢复启用状态;微调需基于 v2ProPlus 底模训练。")
             with gr.Row():
                 with gr.Column():
                     m_id = gr.Textbox(label="模型ID(如 anke_ft)", lines=1)
-                    m_gpt = gr.Textbox(label="GPT 权重路径(服务端, *.pth)", lines=1)
-                    m_sovits = gr.Textbox(label="SoVITS 权重路径(服务端, *.pth)", lines=1)
+                    m_gpt = gr.File(label="GPT 权重文件(.pth/.ckpt)", file_types=[".pth", ".ckpt"])
+                    m_sovits = gr.File(label="SoVITS 权重文件(.pth)", file_types=[".pth"])
                     m_note = gr.Textbox(label="备注", lines=1)
                 with gr.Column():
                     m_tbl = gr.Dataframe(headers=["模型ID", "GPT权重", "SoVITS权重", "备注", "状态"],
@@ -1112,8 +1182,10 @@ def build_ui():
             gr.Markdown(CALL_DOC)
         demo.load(lambda: (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
                            ui_m_list(), gr.update(choices=[m["id"] for m in list_models()]),
-                           ui_active_model()),
-                  None, [lst, pick, t_voice, m_tbl, m_pick, t_model])
+                           ui_active_model(),
+                           gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
+                                     value="base")),
+                  None, [lst, pick, t_voice, m_tbl, m_pick, t_model, e_model])
     return demo
 
 
