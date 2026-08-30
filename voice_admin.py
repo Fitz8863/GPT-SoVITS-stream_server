@@ -99,7 +99,7 @@ def voices_del(voice_id: str):
     if reg["settings"].get("default_voice") == voice_id:
         reg["settings"]["default_voice"] = ""
     save_reg(reg)
-    return {"message": f"deleted '{voice_id}' (音频文件保留在磁盘)"}
+    return {"message": f"已删除 '{voice_id}'(音频文件保留在磁盘)"}
 
 
 @app.post("/asr")
@@ -302,6 +302,15 @@ async def models_add(body: dict):
     ok, msg = _register_model(body.get("id", ""), body.get("gpt_path", ""),
                               body.get("sovits_path", ""), body.get("note", ""))
     return JSONResponse(status_code=200 if ok else 400, content={"message": msg})
+
+
+@app.patch("/models/{mid}")
+async def models_edit_api(mid: str, body: dict):
+    """修改模型包: body 可含 prompt_text/prompt_lang/note"""
+    ok, msg = _edit_model(mid, body.get("prompt_text"), body.get("prompt_lang"), body.get("note"))
+    if not ok:
+        return JSONResponse(status_code=404 if "不存在" in msg else 400, content={"message": msg})
+    return {"message": msg, "entry": load_reg()["models"].get(mid, {})}
 
 
 @app.delete("/models/{mid}")
