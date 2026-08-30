@@ -51,6 +51,10 @@ code=$(curl -s -o /tmp/selftest_6.mp3 -w "%{http_code}:%{size_download}" -m 120 
 code=$(curl -s -o /tmp/selftest_bk.zip -w "%{http_code}" -m 60 $H9873/voices/backup)
 unzip -tq /tmp/selftest_bk.zip > /dev/null 2>&1 && [ "$code" = "200" ] && ok "备份 zip 完整" || bad "备份 zip ($code)"
 
+# 7.5 微调模型注册表
+r=$(curl -s -m 10 $H9873/models | grep -c '"id":"base"')
+[ "$r" = "1" ] && ok "微调模型注册表(base)" || bad "微调模型注册表"
+
 # 8. 页面
 c1=$(curl -sL -o /dev/null -w "%{http_code}" -m 15 $H9873/ui)
 c2=$(curl -sL -o /dev/null -w "%{http_code}" -m 15 http://127.0.0.1:9872/)

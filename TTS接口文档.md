@@ -34,6 +34,7 @@
 | **9873** `/voices` | GET / POST / DELETE | 音色注册表(列表 / 注册 / 删除) |
 | **9873** `/voices/{id}` | PATCH | 修改音色(改ID重命名 / 转写 / 语言 / 备注) |
 | **9873** `/voices/{id}/audio` | POST | 替换音色的参考音频(multipart,re_asr=true 自动重识别转写) |
+| **9873** `/models` 系列 | GET / POST / DELETE / POST activate | 微调模型注册表与热切换(见「微调模型管理」) |
 | **9873** `/ui` | GET | 管理界面(**流式试音**、注册/试听/删除音色、默认参数设置) |
 | **9873** `/asr` | POST | 参考音频自动转写(SenseVoiceSmall,zh/en/ja/ko/yue 自动检测语言) |
 | **9873** `/v1/audio/speech` | POST | **OpenAI TTS 兼容端点**(现成客户端即插即用,mp3/wav/flac/opus/aac/pcm) |
@@ -359,6 +360,26 @@ curl -X POST http://100.95.19.17:9873/asr \
 ```
 管理界面「注册音色」页有同名按钮:上传音频后点【🎙️ 自动识别转写】即可自动填好
 转写文本和参考音频语言(首次使用自动下载 SenseVoiceSmall 模型,约 1GB 显存)。
+
+### 9873 微调模型管理(专属音色热切换)
+
+官方 webui 训练产物是**一对权重**(`GPT_SoVITS/logs/<实验名>/` 下的 `GPT-*.pth` 与 `SoVITS-*.pth`)。
+注册后一键启用/切回底模,走官方热切换端点,**无需重启服务**,重启后也会自动恢复启用的模型。
+
+```bash
+# 注册模型对(相对路径按 GPT-SoVITS/ 解析, 也可用绝对路径)
+curl -X POST http://100.95.19.17:9873/models -H "Content-Type: application/json" \
+  -d '{"id":"anke_ft","gpt_path":"GPT_SoVITS/logs/anke/GPT-anke.pth",
+       "sovits_path":"GPT_SoVITS/logs/anke/SoVITS-anke.pth","note":"安可微调"}'
+
+curl -X POST http://100.95.19.17:9873/models/anke_ft/activate   # 启用
+curl -X POST http://100.95.19.17:9873/models/base/activate      # 切回官方底模
+curl http://100.95.19.17:9873/models                            # 列表+当前启用状态
+curl -X DELETE http://100.95.19.17:9873/models/anke_ft          # 删除注册(权重保留)
+```
+
+注意:① 同一时间只有一个模型生效,切换请在无合成任务时进行;② 微调模型需基于
+v2ProPlus 底模训练;③ 微调音色请搭配**对应说话人**的参考音频(零样本音色库基于底模)。
 
 ### 9873 `/v1/audio/speech` — OpenAI TTS 兼容端点
 

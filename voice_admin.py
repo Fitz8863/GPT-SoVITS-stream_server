@@ -27,9 +27,19 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from starlette.concurrency import run_in_threadpool
 
 VOICES_DIR = Path("/home/hwj/AI/tts-server/voices")
+BASE_DIR = Path(__file__).resolve().parent
+GPTSOVITS_DIR = BASE_DIR / "GPT-SoVITS"
 REG_PATH = VOICES_DIR / "registry.json"
 API = "http://127.0.0.1:9880"
 _lang_lock = threading.Lock()
+
+
+def _resolve_model_path(p):
+    """模型权重相对路径按 api_v2 工作目录(GPT-SoVITS/)解析, 返回绝对路径字符串。"""
+    p = (p or "").strip()
+    if p and not Path(p).is_absolute():
+        p = str((GPTSOVITS_DIR / p).resolve())
+    return p
 
 
 # ---------------- 注册表 ----------------
@@ -37,10 +47,18 @@ _lang_lock = threading.Lock()
 def load_reg() -> dict:
     with _lang_lock:
         try:
-            return json.loads(REG_PATH.read_text(encoding="utf-8"))
+            reg = json.loads(REG_PATH.read_text(encoding="utf-8"))
         except Exception:
-            return {"settings": {"default_voice": "", "default_streaming_mode": 3,
-                                 "default_speed": 1.0, "default_text_lang": "zh"}, "voices": {}}
+            reg = {}
+    reg.setdefault("voices", {})
+    reg.setdefault("models", {})
+    st = reg.setdefault("settings", {})
+    st.setdefault("default_voice", "")
+    st.setdefault("default_streaming_mode", 3)
+    st.setdefault("default_speed", 1.0)
+    st.setdefault("default_text_lang", "zh")
+    st.setdefault("active_model", "base")
+    return reg
 
 
 def save_reg(reg: dict):
@@ -95,6 +113,99 @@ async def asr_endpoint(body: dict):
     if not text:
         return JSONResponse(status_code=400, content={"message": "未识别到语音内容"})
     return {"text": text, "prompt_lang": lang}
+
+
+# ---------------- 微调模型管理(注册/启用/切回底模) ----------------
+
+# 官方 v2ProPlus 底模对(与 tts_infer_v2proplus.yaml 一致, 相对 api_v2 工作目录)
+BASE_MODEL = {
+    "gpt_path": "GPT_SoVITS/pretrained_models/s1v3.ckpt",
+    "sovits_path": "GPT_SoVITS/pretrained_models/v2Pro/s2Gv2ProPlus.pth",
+    "note": "官方 v2ProPlus 底模(零样本音色库基于此)",
+}
+
+
+def list_models():
+    reg = load_reg()
+    items = [{"id": "base", **BASE_MODEL, "active": reg["settings"]["active_model"] == "base"}]
+    for mid, m in sorted(reg["models"].items()):
+        items.append({"id": mid, **m, "active": reg["settings"]["active_model"] == mid})
+    return items
+
+
+def _register_model(mid, gpt_path, sovits_path, note):
+    mid = re.sub(r'[\\/:*?"<>|\s]+', "_", (mid or "").strip())
+    if not mid or mid == "base":
+        return False, "模型ID 无效(不能为 base 或空)"
+    gpt_path = _resolve_model_path(gpt_path)
+    sovits_path = _resolve_model_path(sovits_path)
+    if not gpt_path or not Path(gpt_path).exists():
+        return False, f"GPT 权重不存在: {gpt_path}"
+    if not sovits_path or not Path(sovits_path).exists():
+        return False, f"SoVITS 权重不存在: {sovits_path}"
+    reg = load_reg()
+    if mid in reg["models"]:
+        return False, f"模型 '{mid}' 已注册"
+    reg["models"][mid] = {"gpt_path": gpt_path, "sovits_path": sovits_path,
+                          "note": note or "", "created_at": str(date.today())}
+    save_reg(reg)
+    return True, f"模型 '{mid}' 已注册"
+
+
+def activate_model(mid):
+    """调 api_v2 官方热切换端点启用模型对, 成功后记录到注册表(重启自动恢复)。"""
+    reg = load_reg()
+    if mid == "base":
+        m = BASE_MODEL
+    else:
+        m = reg["models"].get(mid)
+        if not m:
+            return False, f"模型 '{mid}' 未注册"
+        m = dict(m)
+        m["gpt_path"] = _resolve_model_path(m.get("gpt_path"))
+        m["sovits_path"] = _resolve_model_path(m.get("sovits_path"))
+        if not (Path(m["gpt_path"]).exists() and Path(m["sovits_path"]).exists()):
+            return False, "权重文件不存在,请检查路径(可能被移动或删除)"
+    r1 = requests.get(f"{API}/set_gpt_weights",
+                      params={"weights_path": m["gpt_path"]}, timeout=180)
+    r2 = requests.get(f"{API}/set_sovits_weights",
+                      params={"weights_path": m["sovits_path"]}, timeout=180)
+    if r1.status_code != 200 or r2.status_code != 200:
+        return False, (f"切换失败: GPT({r1.status_code}) SoVITS({r2.status_code}) "
+                       f"{r1.text[:120]} {r2.text[:120]}")
+    reg["settings"]["active_model"] = mid
+    save_reg(reg)
+    return True, f"已启用模型 '{mid}'(重启服务也会自动恢复)"
+
+
+@app.get("/models")
+def models_list():
+    return {"active_model": load_reg()["settings"]["active_model"], "models": list_models()}
+
+
+@app.post("/models")
+async def models_add(body: dict):
+    ok, msg = _register_model(body.get("id", ""), body.get("gpt_path", ""),
+                              body.get("sovits_path", ""), body.get("note", ""))
+    return JSONResponse(status_code=200 if ok else 400, content={"message": msg})
+
+
+@app.delete("/models/{mid}")
+def models_del(mid: str):
+    reg = load_reg()
+    if mid not in reg["models"]:
+        return JSONResponse(status_code=404, content={"message": f"模型 '{mid}' 未注册"})
+    del reg["models"][mid]
+    if reg["settings"].get("active_model") == mid:
+        reg["settings"]["active_model"] = "base"
+    save_reg(reg)
+    return {"message": f"已删除注册 '{mid}'(权重文件保留)"}
+
+
+@app.post("/models/{mid}/activate")
+async def models_activate(mid: str):
+    ok, msg = await run_in_threadpool(activate_model, mid)
+    return JSONResponse(status_code=200 if ok else 400, content={"message": msg})
 
 
 # ---------------- OpenAI 兼容端点(/v1/audio/speech) ----------------
@@ -783,6 +894,39 @@ def ui_restore(fpath, overwrite):
             f"跳过同名 {len(skipped)} 个 {skipped}"), ui_list(), _voice_choices_with_default()
 
 
+def ui_m_list():
+    return [[m["id"], m.get("gpt_path", ""), m.get("sovits_path", ""),
+             m.get("note", ""), "✅ 当前启用" if m["active"] else ""] for m in list_models()]
+
+
+def ui_m_register(mid, gpt_path, sovits_path, note):
+    ok, msg = _register_model(mid, gpt_path, sovits_path, note)
+    if not ok:
+        raise gr.Error(msg)
+    ids = [m["id"] for m in list_models() if m["id"] != "base"]
+    return msg, ui_m_list(), gr.update(choices=ids, value=mid)
+
+
+def ui_m_activate(mid):
+    if not mid:
+        raise gr.Error("请先选择要启用的模型")
+    ok, msg = activate_model(mid)
+    if not ok:
+        raise gr.Error(msg)
+    return msg + "(请搭配该音色对应的参考音频使用)", ui_m_list()
+
+
+def ui_m_del(mid):
+    reg = load_reg()
+    if not mid or mid not in reg["models"]:
+        raise gr.Error("请先选择要删除的模型注册(不能删 base)")
+    del reg["models"][mid]
+    if reg["settings"].get("active_model") == mid:
+        reg["settings"]["active_model"] = "base"
+    save_reg(reg)
+    return f"已删除注册 '{mid}'(权重文件保留)", ui_m_list()
+
+
 def build_ui():
     st0 = load_reg()["settings"]
     with gr.Blocks(title="TTS 音色管理后台") as demo:
@@ -904,6 +1048,32 @@ def build_ui():
             st_out = gr.Markdown("")
             save_btn.click(ui_save_settings, [d_voice, d_mode, d_speed, d_lang], [st_out])
 
+        with gr.Tab("🧠 微调模型"):
+            gr.Markdown(
+                "### 🧠 微调(专属音色)模型管理\n"
+                "官方 webui 训练产物是**一对权重**(`GPT_SoVITS/logs/<实验名>/` 下的 `GPT-*.pth` 与 `SoVITS-*.pth`,"
+                "建议先把要用的迭代拷到固定目录再注册)。\n"
+                "注册后可随时一键启用/切回底模,重启服务自动恢复;**同一时间只有一个模型生效**,"
+                "微调模型请搭配对应说话人的参考音频;切换请在无合成任务时进行。微调需基于 v2ProPlus 底模训练。")
+            with gr.Row():
+                with gr.Column():
+                    m_id = gr.Textbox(label="模型ID(如 anke_ft)", lines=1)
+                    m_gpt = gr.Textbox(label="GPT 权重路径(服务端, *.pth)", lines=1)
+                    m_sovits = gr.Textbox(label="SoVITS 权重路径(服务端, *.pth)", lines=1)
+                    m_note = gr.Textbox(label="备注", lines=1)
+                with gr.Column():
+                    m_tbl = gr.Dataframe(headers=["模型ID", "GPT权重", "SoVITS权重", "备注", "状态"],
+                                         interactive=False, wrap=True)
+                    m_pick = gr.Dropdown(choices=[], label="选择要启用的模型(含 base 底模)")
+            with gr.Row():
+                m_reg_btn = gr.Button("📥 注册模型")
+                m_act_btn = gr.Button("🚀 启用选中模型", variant="primary")
+                m_del_btn = gr.Button("🗑️ 删除选中注册")
+            m_out = gr.Markdown("")
+            m_reg_btn.click(ui_m_register, [m_id, m_gpt, m_sovits, m_note], [m_out, m_tbl, m_pick])
+            m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl])
+            m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
+
         with gr.Tab("💾 备份 / 恢复"):
             with gr.Row():
                 with gr.Column():
@@ -922,8 +1092,9 @@ def build_ui():
 
         with gr.Tab("📖 调用说明"):
             gr.Markdown(CALL_DOC)
-        demo.load(lambda: (ui_list(), _voice_choices_with_default(), _voice_choices_with_default()),
-                  None, [lst, pick, t_voice])
+        demo.load(lambda: (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
+                           ui_m_list(), gr.update(choices=[m["id"] for m in list_models()])),
+                  None, [lst, pick, t_voice, m_tbl, m_pick])
     return demo
 
 
@@ -959,6 +1130,18 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[Keeper] GPU 保活线程退出: {e}", flush=True)
 
+    def _apply_active_model():
+        """启动后自动恢复上次启用的微调模型(9880 端口就绪后执行)。"""
+        try:
+            mid = load_reg()["settings"].get("active_model", "base")
+            if mid and mid != "base":
+                time.sleep(3)
+                ok, msg = activate_model(mid)
+                print(f"[Model] 启动恢复微调模型 '{mid}': {msg}", flush=True)
+        except Exception as e:
+            print(f"[Model] 启动恢复微调模型失败: {e}", flush=True)
+
     threading.Thread(target=_preload_asr, daemon=True).start()
     threading.Thread(target=_gpu_keeper, daemon=True).start()
+    threading.Thread(target=_apply_active_model, daemon=True).start()
     uvicorn.run(app, host="0.0.0.0", port=9873)
