@@ -1192,20 +1192,9 @@ def ui_m_register(mid, gpt_path, sovits_path, ref_path, note, ptext, plang, re_a
                                     prompt_lang=plang, re_asr=bool(re_asr))
     if not ok:
         raise gr.Error(msg)
-    ids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
+    ids = [m["id"] for m in list_models() if m["id"] != "base"]
     return (msg, ui_m_list(), gr.update(choices=ids, value=mid),
             gr.update(choices=ids, value=mid))
-
-
-def ui_m_activate(mid):
-    if not mid:
-        raise gr.Error("请先选择要启用的模型")
-    ok, msg = activate_model(mid)
-    if not ok:
-        raise gr.Error(msg)
-    mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
-    return (msg + "(专属音色模式已生效)", ui_m_list(), ui_active_model(),
-            gr.update(choices=mids, value=mid), gr.update(choices=mids, value=mid))
 
 
 def ui_m_del(mid):
@@ -1220,8 +1209,8 @@ def ui_m_del(mid):
 
 
 def _m_pick_update():
-    """模型包下拉框的 choices 刷新。"""
-    return gr.update(choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"])
+    """模型包下拉框的 choices 刷新(不含 base)。"""
+    return gr.update(choices=[m["id"] for m in list_models() if m["id"] != "base"])
 
 
 def ui_m_pick_full(mid):
@@ -1368,11 +1357,8 @@ def build_ui():
                 with gr.Row():
                     with gr.Column():
                         f_model = gr.Dropdown(
-                            choices=["base"] + [m["id"] for m in list_models() if m["id"] != "base"],
-                            value=active0 if active0 != "base" and any(
-                                m["id"] == active0 for m in list_models()) else "base",
-                            label="使用模型包(专属音色)") if False else gr.Dropdown(
-                            choices=[], value=None, label="使用模型包(专属音色)", interactive=True)
+                            choices=[], value=None,
+                            label="使用模型包(专属音色, 启用即热切换)", interactive=True)
                         f_text = gr.Textbox(
                             label="要合成的文本",
                             value="你好,这是专属音色的流式试音,自动使用模型捆绑的参考音频。", lines=3)
@@ -1439,7 +1425,6 @@ def build_ui():
                         m_enote = gr.Textbox(label="备注(可修改)", lines=1)
                 with gr.Row():
                     m_save = gr.Button("💾 保存修改", variant="primary")
-                    m_act_btn = gr.Button("🚀 启用选中模型", variant="primary")
                     m_del_btn = gr.Button("🗑️ 删除选中注册", variant="stop")
                 m_out = gr.Markdown("")
 
@@ -1487,7 +1472,6 @@ def build_ui():
         m_refresh.click(lambda: (ui_m_list(), _m_pick_update()), None, [m_tbl, m_pick])
         m_pick.change(ui_m_pick_full, [m_pick], [m_play, m_eprompt, m_elang, m_enote])
         m_save.click(ui_m_edit, [m_pick, m_eprompt, m_elang, m_enote], [m_out, m_tbl])
-        m_act_btn.click(ui_m_activate, [m_pick], [m_out, m_tbl, m_active_md, m_pick, f_model])
         m_del_btn.click(ui_m_del, [m_pick], [m_out, m_tbl])
 
         # ==================== 页面加载刷新 ====================
@@ -1495,10 +1479,11 @@ def build_ui():
             reg = load_reg()
             active = reg["settings"].get("active_model", "base")
             mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
-            fv = active if active in mids else "base"
-            show_clone = fv == "base"
+            ft_ids = [m["id"] for m in list_models() if m["id"] != "base"]
+            fv = active if active in ft_ids else (ft_ids[0] if ft_ids else None)
+            show_clone = fv == "base" or not ft_ids
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
-                    ui_m_list(), gr.update(choices=mids), gr.update(choices=mids, value=fv),
+                    ui_m_list(), gr.update(choices=ft_ids), gr.update(choices=ft_ids, value=fv),
                     gr.update(choices=["clone", "ftuned"], value=("clone" if show_clone else "ftuned")),
                     ui_active_model(),
                     gr.update(visible=show_clone), gr.update(visible=not show_clone))
