@@ -12,8 +12,10 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
+import wave
 import zipfile
 from datetime import date
 from io import BytesIO
@@ -777,6 +779,7 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
     first = None
     n_audio = 0
     pending = bytearray()
+    pcm = bytearray()   # 完整 PCM 累积: 试音结束后落盘完整 wav, 供"下载本次合成"按钮
     MIN_YIELD = 32000  # ~0.5s @32k/16bit
     waited = 0.0
     connected = False
@@ -786,9 +789,9 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
             kind, data = q.get(timeout=1.0)
         except _queue.Empty:
             if connected:
-                yield None, f"⏳ 合成/传输中… 已等待 {waited:.0f}s(引擎为单实例串行, 前方有任务时需排队)"
+                yield None, f"⏳ 合成/传输中… 已等待 {waited:.0f}s(引擎为单实例串行, 前方有任务时需排队)", gr.update(interactive=False)
             else:
-                yield None, f"⏳ 模型热切换/请求准备中… 已等待 {waited:.0f}s(首次启用新模型需加载权重, 稍慢属正常)"
+                yield None, f"⏳ 模型热切换/请求准备中… 已等待 {waited:.0f}s(首次启用新模型需加载权重, 稍慢属正常)", gr.update(interactive=False)
             waited += 1.0
             continue
         if kind == "error":
@@ -816,24 +819,40 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
         if n < MIN_YIELD:
             continue
         arr = np.frombuffer(pending[:n], dtype=np.int16)  # int16 直通, 防 gradio 逐块归一化噪音
+        pcm += pending[:n]
         del pending[:n]
         n_audio += n
-        yield (sr, arr), f"🎙️ 合成中… 已出声 {n_audio/(sr*2):.1f}s"
+        yield (sr, arr), f"🎙️ 合成中… 已出声 {n_audio/(sr*2):.1f}s", gr.update(interactive=False)
 
     if pending:
         n = len(pending) - (len(pending) % 2)
         if n > 0:
             n_audio += n
-            yield (sr, np.frombuffer(pending[:n], dtype=np.int16)), ""
+            pcm += pending[:n]
+            yield (sr, np.frombuffer(pending[:n], dtype=np.int16)), "", gr.update(interactive=False)
 
     if n_audio == 0:
         raise gr.Error("服务端没有返回任何音频。常见原因:参考音频时长超出 3~10s 硬性限制、"
                        "文件损坏或转写不匹配,详情查看 api_v2.log")
 
+    # 落盘完整 wav 供下载(流式播放本身不产生文件, Gradio 流式组件的下载按钮无文件可下)
+    export_dir = Path(tempfile.gettempdir()) / "tts_exports"
+    export_dir.mkdir(exist_ok=True)
+    for old in export_dir.glob("*.wav"):   # 清理 24h 前的旧导出文件
+        if time.time() - old.stat().st_mtime > 86400:
+            old.unlink()
+    safe = re.sub(r"[^\w\-.]", "_", (voice or use_model or desired or "tts"))[:40] or "tts"
+    out_path = export_dir / f"{safe}_{time.strftime('%Y%m%d_%H%M%S')}.wav"
+    with wave.open(str(out_path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes(bytes(pcm))
+
     mode_cn = "克隆模式(底模)" if desired == "base" else f"专属模式(模型 {desired})"
     stats = (f"**{mode_cn}** | 首包 **{first*1000:.0f} ms** | "
              f"时长 **{n_audio/(sr*2):.2f} s** | 总耗时 **{time.perf_counter()-t0:.2f} s** | {sr} Hz")
-    yield None, stats
+    yield None, stats, gr.update(value=str(out_path), interactive=True)
 
 
 LANG_FULL = [
@@ -1301,7 +1320,8 @@ def build_ui():
                         t_btn = gr.Button("🔊 开始合成(克隆模式)", variant="primary")
                     with gr.Column():
                         t_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True, interactive=False,
-                                           autoplay=True, show_download_button=True)
+                                           autoplay=True, show_download_button=False)  # 流式组件无完整文件, 假下载项已关
+                        t_dl = gr.DownloadButton("⬇️ 下载本次合成 WAV", interactive=False)
                         t_stats = gr.Markdown("克隆模式:使用 base 底模 + 所选音色的参考音频")
 
             with gr.Tab("➕ 添加克隆音色"):
@@ -1382,7 +1402,8 @@ def build_ui():
                         f_btn = gr.Button("🔊 开始合成(专属模式)", variant="primary")
                     with gr.Column():
                         f_audio = gr.Audio(label="流式播放(边合成边播)", streaming=True, interactive=False,
-                                           autoplay=True, show_download_button=True)
+                                           autoplay=True, show_download_button=False)  # 流式组件无完整文件, 假下载项已关
+                        f_dl = gr.DownloadButton("⬇️ 下载本次合成 WAV", interactive=False)
                         f_stats = gr.Markdown("专属模式:自动切换到所选模型,并使用其捆绑的参考音频")
 
             with gr.Tab("➕ 添加专属音色(模型包)"):
@@ -1458,12 +1479,12 @@ def build_ui():
         t_btn.click(tts_stream_play,
                     [t_voice, t_text, t_lang, t_mode, t_speed,
                      a_seed, a_rep, a_topk, a_topp, a_temp, a_cut, gr.State("base")],
-                    [t_audio, t_stats])
+                    [t_audio, t_stats, t_dl])
         # 专属模式试音: 按选中的模型包自动热切换引擎并使用其捆绑参考音频
         f_btn.click(tts_stream_play,
                     [gr.State(None), f_text, f_lang, f_mode, f_speed,
                      b_seed, b_rep, b_topk, b_topp, b_temp, b_cut, f_model],
-                    [f_audio, f_stats])
+                    [f_audio, f_stats, f_dl])
 
         # ==================== 事件绑定(专属) ====================
         m_reg_btn.click(ui_m_register,
