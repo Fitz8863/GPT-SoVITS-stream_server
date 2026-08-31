@@ -22,3 +22,6 @@ bench/*.wav
 
 # 微调模型权重(超大文件, 不入库)
 fine_tuned_models/
+
+# 插件/工具缓存(误生成)
+.v2c/
