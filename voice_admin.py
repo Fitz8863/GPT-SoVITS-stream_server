@@ -1460,6 +1460,11 @@ def build_ui():
                     [t_voice, t_text, t_lang, t_mode, t_speed,
                      a_seed, a_rep, a_topk, a_topp, a_temp, a_cut, gr.State("base")],
                     [t_audio, t_stats])
+        # 专属模式试音: 按选中的模型包自动热切换引擎并使用其捆绑参考音频
+        f_btn.click(tts_stream_play,
+                    [gr.State(None), f_text, f_lang, f_mode, f_speed,
+                     b_seed, b_rep, b_topk, b_topp, b_temp, b_cut, f_model],
+                    [f_audio, f_stats])
 
         # ==================== 事件绑定(专属) ====================
         m_reg_btn.click(ui_m_register,
