@@ -1480,10 +1480,10 @@ def build_ui():
         def _load_all():
             reg = load_reg()
             active = reg["settings"].get("active_model", "base")
-            mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
             ft_ids = [m["id"] for m in list_models() if m["id"] != "base"]
             fv = active if active in ft_ids else (ft_ids[0] if ft_ids else None)
-            show_clone = fv == "base" or not ft_ids
+            # 模式回显只能看 active(fv 是专属下拉的兜底值, active=base 时它是微调模型 id, 不能用来判模式)
+            show_clone = active == "base" or not ft_ids
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
                     ui_m_list(), gr.update(choices=ft_ids), gr.update(choices=ft_ids, value=fv),
                     gr.update(choices=[("克隆模式", "clone"), ("专属模式", "ftuned")],
