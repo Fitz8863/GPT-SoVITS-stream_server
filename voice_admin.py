@@ -747,9 +747,29 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
     if seed is not None and int(seed) != -1:
         payload["seed"] = int(seed)
     t0 = time.perf_counter()
-    r = requests.post(f"{API}/tts", json=payload, stream=True, timeout=300)
-    if r.status_code != 200:
-        raise gr.Error(f"API {r.status_code}: {r.text[:200]}")
+
+    # 工作线程执行 请求+激活+流式接收, 主协程轮询队列:
+    #  - 持续向页面反馈"热切换/排队/合成中"进度(避免点击后长时间无反馈)
+    #  - 音频块一到就交给页面播放
+    import queue as _queue
+    q: _queue.Queue = _queue.Queue()
+
+    def _worker():
+        try:
+            ok, mmsg = _ensure_active_model(desired)
+            if not ok:
+                q.put(("error", f"模型自动切换失败: {mmsg}")); return
+            r = requests.post(f"{API}/tts", json=payload, stream=True, timeout=240)
+            if r.status_code != 200:
+                q.put(("error", f"API {r.status_code}: {r.text[:200]}")); return
+            q.put(("connected", None))
+            for chunk in r.iter_content(chunk_size=65536):
+                q.put(("data", chunk))
+            q.put(("done", None))
+        except Exception as e:
+            q.put(("error", f"{type(e).__name__}: {e}"))
+
+    threading.Thread(target=_worker, daemon=True).start()
 
     buf = b""
     header_done = False
@@ -758,12 +778,34 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
     n_audio = 0
     pending = bytearray()
     MIN_YIELD = 32000  # ~0.5s @32k/16bit
+    waited = 0.0
+    connected = False
 
-    for chunk in r.iter_content(chunk_size=65536):
-        buf += chunk
+    while True:
+        try:
+            kind, data = q.get(timeout=1.0)
+        except _queue.Empty:
+            if connected:
+                yield None, f"⏳ 合成/传输中… 已等待 {waited:.0f}s(引擎为单实例串行, 前方有任务时需排队)"
+            else:
+                yield None, f"⏳ 模型热切换/请求准备中… 已等待 {waited:.0f}s(首次启用新模型需加载权重, 稍慢属正常)"
+            waited += 1.0
+            continue
+        if kind == "error":
+            raise gr.Error(data)
+        if kind == "connected":
+            if not connected:
+                connected = True
+            continue
+        if kind == "done":
+            break
+        # data 为音频块
+        buf += data
         if not header_done:
             if len(buf) < 44:
                 continue
+            if buf[0:4] != b"RIFF":
+                raise gr.Error("返回流不是 WAV(服务端可能报错, 查看服务日志)")
             sr = int.from_bytes(buf[24:28], "little")
             header_done = True
             first = time.perf_counter() - t0
@@ -776,7 +818,7 @@ def tts_stream_play(voice, text, text_lang, mode, speed, seed, repetition_penalt
         arr = np.frombuffer(pending[:n], dtype=np.int16)  # int16 直通, 防 gradio 逐块归一化噪音
         del pending[:n]
         n_audio += n
-        yield (sr, arr), ""
+        yield (sr, arr), f"🎙️ 合成中… 已出声 {n_audio/(sr*2):.1f}s"
 
     if pending:
         n = len(pending) - (len(pending) % 2)
@@ -1094,6 +1136,25 @@ def ui_active_model():
     return f"**当前启用模型: `{mid}`** {tag}"
 
 
+def _mids_choices():
+    return ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
+
+
+def ui_set_global_mode(mode, g_model):
+    """全局模式开关: 克隆=切回 base; 专属=启用所选微调模型。即时热切换。"""
+    target = "base" if mode == "clone" else (g_model or "")
+    if mode != "clone" and not target:
+        raise gr.Error("请先在右侧下拉选择要使用的微调模型")
+    if mode != "clone" and target not in load_reg()["models"]:
+        raise gr.Error(f"模型 '{target}' 未注册")
+    ok, msg = activate_model(target)
+    if not ok:
+        raise gr.Error(msg)
+    mode_cn = "🔵 克隆模式(base 底模 + 音色库)" if target == "base" else f"🟣 专属模式(模型 {target})"
+    upd = gr.update(choices=_mids_choices(), value=target)
+    return f"✅ 已切换 → {mode_cn}", upd, upd, upd
+
+
 def ui_m_list():
     return [[m["id"], m.get("gpt_path", ""), m.get("sovits_path", ""),
              m.get("note", ""), "✅ 当前启用" if m["active"] else ""] for m in list_models()]
@@ -1198,6 +1259,21 @@ def build_ui():
             "🟣 **专属模式** — 上传自己微调的模型 + 捆绑参考音频,固定音色长期使用。\n"
             "调用 API:`{\"voice\":\"音色ID\"}` 走克隆;`{\"model\":\"模型ID\"}` 走专属(自动切换模型)。")
 
+        # ==================== 全局模式控制(即时热切换) ====================
+        with gr.Row(variant="panel"):
+            with gr.Column(scale=1):
+                g_mode = gr.Radio(
+                    choices=[("🔵 克隆模式", "clone"), ("🟣 专属模式", "ftuned")],
+                    value=("clone" if active0 == "base" else "ftuned"),
+                    label="全局工作模式(互斥, 即时切换)")
+            with gr.Column(scale=1):
+                g_model = gr.Dropdown(
+                    choices=[], value=None,
+                    label="专属模式使用的模型包(选'专属模式'时生效)",
+                    interactive=True)
+                g_btn = gr.Button("🚀 应用模式切换", variant="primary")
+            with gr.Column(scale=1):
+                g_status = gr.Markdown(ui_active_model())
         # ==================== 栏目一: 克隆模式 ====================
         with gr.Tab("🔵 克隆模式"):
             with gr.Tab("🔊 流式试音"):
@@ -1416,8 +1492,15 @@ def build_ui():
             mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
             fv = active if active in mids else "base"
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
-                    ui_m_list(), gr.update(choices=mids), gr.update(choices=mids, value=fv))
-        demo.load(_load_all, None, [lst, pick, t_voice, m_tbl, m_pick, f_model])
+                    ui_m_list(), gr.update(choices=mids), gr.update(choices=mids, value=fv),
+                    gr.update(choices=["clone", "ftuned"], value=("clone" if fv == "base" else "ftuned")),
+                    gr.update(choices=mids, value=fv), ui_active_model())
+        demo.load(_load_all, None, [lst, pick, t_voice, m_tbl, m_pick, f_model,
+                                    g_mode, g_model, g_status])
+
+        # ==================== 全局模式事件绑定(组件均已定义) ====================
+        g_btn.click(ui_set_global_mode, [g_mode, g_model], [g_status, g_model, m_pick, f_model])
+        g_mode.change(lambda m: gr.update(visible=(m == "ftuned")), [g_mode], [g_model])
     return demo
 
 demo = build_ui()
