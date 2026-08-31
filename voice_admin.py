@@ -1140,19 +1140,26 @@ def _mids_choices():
     return ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
 
 
-def ui_set_global_mode(mode, g_model):
-    """全局模式开关: 克隆=切回 base; 专属=启用所选微调模型。即时热切换。"""
-    target = "base" if mode == "clone" else (g_model or "")
-    if mode != "clone" and not target:
-        raise gr.Error("请先在右侧下拉选择要使用的微调模型")
-    if mode != "clone" and target not in load_reg()["models"]:
-        raise gr.Error(f"模型 '{target}' 未注册")
+def ui_set_global_mode(mode):
+    """全局模式开关: 克隆=切回 base; 专属=启用最近注册的微调模型包(当前已是微调模型则保持)。
+    需要精确指定模型时, 用「模型包管理」页的启用按钮。即时热切换。"""
+    reg = load_reg()
+    ft = [m["id"] for m in reg["models"].values()]
+    target = "base"
+    if mode != "clone":
+        if reg["settings"].get("active_model", "base") in reg["models"]:
+            target = reg["settings"]["active_model"]        # 已是微调模型, 保持
+        elif ft:
+            target = ft[-1]                                  # 最近注册的模型包
+        else:
+            raise gr.Error("还没有注册任何微调模型, 请先在「专属模式 → 添加专属音色包」上传")
     ok, msg = activate_model(target)
     if not ok:
         raise gr.Error(msg)
     mode_cn = "🔵 克隆模式(base 底模 + 音色库)" if target == "base" else f"🟣 专属模式(模型 {target})"
     upd = gr.update(choices=_mids_choices(), value=target)
-    return f"✅ 已切换 → {mode_cn}", upd, upd, upd
+    hint = f"(模型: {target})" if target != "base" else "(如需指定模型, 用「模型包管理」页启用)"
+    return f"✅ 已切换 → {mode_cn} {hint}", upd, upd, upd
 
 
 def ui_m_list():
@@ -1267,12 +1274,8 @@ def build_ui():
                     value=("clone" if active0 == "base" else "ftuned"),
                     label="全局工作模式(互斥, 即时切换)")
             with gr.Column(scale=1):
-                g_model = gr.Dropdown(
-                    choices=[], value=None,
-                    label="专属模式使用的模型包(选'专属模式'时生效)",
-                    interactive=True)
                 g_btn = gr.Button("🚀 应用模式切换", variant="primary")
-            with gr.Column(scale=1):
+            with gr.Column(scale=2):
                 g_status = gr.Markdown(ui_active_model())
         # ==================== 栏目一: 克隆模式 ====================
         # (可见性由顶部全局模式开关控制: 克隆模式显示本栏, 专属模式隐藏)
@@ -1497,10 +1500,10 @@ def build_ui():
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
                     ui_m_list(), gr.update(choices=mids), gr.update(choices=mids, value=fv),
                     gr.update(choices=["clone", "ftuned"], value=("clone" if show_clone else "ftuned")),
-                    gr.update(choices=mids, value=fv), ui_active_model(),
+                    ui_active_model(),
                     gr.update(visible=show_clone), gr.update(visible=not show_clone))
         demo.load(_load_all, None, [lst, pick, t_voice, m_tbl, m_pick, f_model,
-                                    g_mode, g_model, g_status, tab_clone, tab_ftuned])
+                                    g_mode, g_status, tab_clone, tab_ftuned])
 
         # ==================== 全局模式事件绑定(组件均已定义) ====================
         def _apply_mode_ui(mode):
@@ -1515,21 +1518,19 @@ def build_ui():
                     ui_active_model())
 
         def _on_mode_select(mode):
-            """单选切到'专属'时自动带出当前启用模型, 选'克隆'时隐藏模型下拉。"""
-            active = load_reg()["settings"].get("active_model", "base")
-            return (gr.update(visible=(mode == "ftuned")),
-                    gr.update(value=active if mode == "ftuned" else None))
+            """单选变化时提示将应用的模式。"""
+            return "点击【🚀 应用模式切换】生效"
 
-        def _global_mode_click(mode, g_model):
+        def _global_mode_click(mode):
             """应用切换(热切换引擎) + 隐藏另一栏目。"""
-            msg, upd1, upd2, upd3 = ui_set_global_mode(mode, g_model)
+            msg, upd1, upd2, upd3 = ui_set_global_mode(mode)
             show_clone = mode == "clone"
             return (msg, upd1, upd2, upd3,
                     gr.update(visible=show_clone), gr.update(visible=not show_clone))
 
-        g_btn.click(_global_mode_click, [g_mode, g_model],
-                    [g_status, g_model, m_pick, f_model, tab_clone, tab_ftuned])
-        g_mode.change(_on_mode_select, [g_mode], [g_model])
+        g_btn.click(_global_mode_click, [g_mode],
+                    [g_status, m_pick, f_model, tab_clone, tab_ftuned])
+        g_mode.change(lambda m: gr.update(visible=(m == "ftuned")), [g_mode], [g_btn])
     return demo
 
 demo = build_ui()
