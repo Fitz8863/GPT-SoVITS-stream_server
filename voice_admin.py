@@ -1522,11 +1522,16 @@ def build_ui():
             return "点击【🚀 应用模式切换】生效"
 
         def _global_mode_click(mode):
-            """应用切换(热切换引擎) + 隐藏另一栏目。"""
-            msg, upd1, upd2, upd3 = ui_set_global_mode(mode)
+            """应用切换(热切换引擎) + 隐藏另一栏目。返回 5 值严格对应 5 个输出。"""
+            msg, _, _, _ = ui_set_global_mode(mode)
+            active = load_reg()["settings"].get("active_model", "base")
+            mids = _mids_choices()
             show_clone = mode == "clone"
-            return (msg, upd1, upd2, upd3,
-                    gr.update(visible=show_clone), gr.update(visible=not show_clone))
+            return (msg,
+                    gr.update(choices=mids, value=active),   # m_pick(模型包管理)
+                    gr.update(choices=mids, value=active),   # f_model(专属试音)
+                    gr.update(visible=show_clone),           # tab_clone
+                    gr.update(visible=not show_clone))       # tab_ftuned
 
         g_btn.click(_global_mode_click, [g_mode],
                     [g_status, m_pick, f_model, tab_clone, tab_ftuned])
