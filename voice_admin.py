@@ -1261,9 +1261,7 @@ def build_ui():
                 g_mode = gr.Radio(
                     choices=[("🔵 克隆模式", "clone"), ("🟣 专属模式", "ftuned")],
                     value=("clone" if active0 == "base" else "ftuned"),
-                    label="全局工作模式(互斥, 即时切换)")
-            with gr.Column(scale=1):
-                g_btn = gr.Button("🚀 应用模式切换", variant="primary")
+                    label="全局工作模式(点选即切换引擎模型)")
             with gr.Column(scale=2):
                 g_status = gr.Markdown(ui_active_model())
         # ==================== 栏目一: 克隆模式 ====================
@@ -1502,12 +1500,8 @@ def build_ui():
                     gr.update(choices=mids, value=active),
                     ui_active_model())
 
-        def _on_mode_select(mode):
-            """单选变化时提示将应用的模式。"""
-            return "点击【🚀 应用模式切换】生效"
-
         def _global_mode_click(mode):
-            """应用切换(热切换引擎) + 隐藏另一栏目。返回 5 值严格对应 5 个输出。"""
+            """点选模式即热切换引擎 + 隐藏另一栏目。返回 5 值严格对应 5 个输出。"""
             msg, _, _, _ = ui_set_global_mode(mode)
             active = load_reg()["settings"].get("active_model", "base")
             mids = _mids_choices()
@@ -1518,9 +1512,9 @@ def build_ui():
                     gr.update(visible=show_clone),           # tab_clone
                     gr.update(visible=not show_clone))       # tab_ftuned
 
-        g_btn.click(_global_mode_click, [g_mode],
-                    [g_status, m_pick, f_model, tab_clone, tab_ftuned])
-        g_mode.change(lambda m: gr.update(visible=(m == "ftuned")), [g_mode], [g_btn])
+        # 点选单选 → 立即热切换引擎模型 + 栏目显隐(5 输出严格对应 5 返回值)
+        g_mode.change(_global_mode_click, [g_mode],
+                      [g_status, m_pick, f_model, tab_clone, tab_ftuned])
     return demo
 
 demo = build_ui()
