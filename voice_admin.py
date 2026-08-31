@@ -1275,7 +1275,8 @@ def build_ui():
             with gr.Column(scale=1):
                 g_status = gr.Markdown(ui_active_model())
         # ==================== 栏目一: 克隆模式 ====================
-        with gr.Tab("🔵 克隆模式"):
+        # (可见性由顶部全局模式开关控制: 克隆模式显示本栏, 专属模式隐藏)
+        with gr.Tab("🔵 克隆模式") as tab_clone:
             with gr.Tab("🔊 流式试音"):
                 with gr.Row():
                     with gr.Column():
@@ -1358,7 +1359,8 @@ def build_ui():
                     del_out = gr.Markdown("")
 
         # ==================== 栏目二: 专属模式 ====================
-        with gr.Tab("🟣 专属模式"):
+        # (可见性由顶部全局模式开关控制: 专属模式显示本栏, 克隆模式隐藏)
+        with gr.Tab("🟣 专属模式") as tab_ftuned:
             with gr.Tab("🔊 流式试音"):
                 with gr.Row():
                     with gr.Column():
@@ -1491,16 +1493,43 @@ def build_ui():
             active = reg["settings"].get("active_model", "base")
             mids = ["base"] + [m["id"] for m in list_models() if m["id"] != "base"]
             fv = active if active in mids else "base"
+            show_clone = fv == "base"
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
                     ui_m_list(), gr.update(choices=mids), gr.update(choices=mids, value=fv),
-                    gr.update(choices=["clone", "ftuned"], value=("clone" if fv == "base" else "ftuned")),
-                    gr.update(choices=mids, value=fv), ui_active_model())
+                    gr.update(choices=["clone", "ftuned"], value=("clone" if show_clone else "ftuned")),
+                    gr.update(choices=mids, value=fv), ui_active_model(),
+                    gr.update(visible=show_clone), gr.update(visible=not show_clone))
         demo.load(_load_all, None, [lst, pick, t_voice, m_tbl, m_pick, f_model,
-                                    g_mode, g_model, g_status])
+                                    g_mode, g_model, g_status, tab_clone, tab_ftuned])
 
         # ==================== 全局模式事件绑定(组件均已定义) ====================
-        g_btn.click(ui_set_global_mode, [g_mode, g_model], [g_status, g_model, m_pick, f_model])
-        g_mode.change(lambda m: gr.update(visible=(m == "ftuned")), [g_mode], [g_model])
+        def _apply_mode_ui(mode):
+            """点应用后: 按模式隐藏另一栏目, 并回填全局控件状态。"""
+            show_clone = mode == "clone"
+            active = load_reg()["settings"].get("active_model", "base")
+            mids = _mids_choices()
+            return (gr.update(visible=show_clone),
+                    gr.update(visible=not show_clone),
+                    gr.update(choices=["clone", "ftuned"], value=mode),
+                    gr.update(choices=mids, value=active),
+                    ui_active_model())
+
+        def _on_mode_select(mode):
+            """单选切到'专属'时自动带出当前启用模型, 选'克隆'时隐藏模型下拉。"""
+            active = load_reg()["settings"].get("active_model", "base")
+            return (gr.update(visible=(mode == "ftuned")),
+                    gr.update(value=active if mode == "ftuned" else None))
+
+        def _global_mode_click(mode, g_model):
+            """应用切换(热切换引擎) + 隐藏另一栏目。"""
+            msg, upd1, upd2, upd3 = ui_set_global_mode(mode, g_model)
+            show_clone = mode == "clone"
+            return (msg, upd1, upd2, upd3,
+                    gr.update(visible=show_clone), gr.update(visible=not show_clone))
+
+        g_btn.click(_global_mode_click, [g_mode, g_model],
+                    [g_status, g_model, m_pick, f_model, tab_clone, tab_ftuned])
+        g_mode.change(_on_mode_select, [g_mode], [g_model])
     return demo
 
 demo = build_ui()
