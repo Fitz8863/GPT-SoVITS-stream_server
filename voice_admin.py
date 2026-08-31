@@ -659,8 +659,8 @@ def transcribe_file(path):
     return text, lang
 
 
-def ui_autotranscribe(upload, srv_path):
-    path = upload or srv_path
+def ui_autotranscribe(upload):
+    path = upload
     if not path:
         raise gr.Error("请先上传音频或填写服务器本地路径")
     try:
@@ -982,8 +982,8 @@ def ui_check_upload(fpath):
     return f"✓ 音频时长 {dur:.1f}s,符合 3~10s 要求", None
 
 
-def ui_register(voice_id, upload, srv_path, prompt_text, prompt_lang, note):
-    path = upload or srv_path
+def ui_register(voice_id, upload, prompt_text, prompt_lang, note):
+    path = upload
     ok, msg = _register(voice_id, path, prompt_text, prompt_lang, note, copy_file=bool(upload))
     upd = _voice_choices_with_default() if ok else gr.update()
     return msg, upd
@@ -1310,7 +1310,6 @@ def build_ui():
                         up = gr.Audio(sources=["upload"], type="filepath",
                                       label="上传参考音频(要求 3~10 秒,超限会被拒绝)")
                         up_status = gr.Markdown("")
-                        srv = gr.Textbox(label="或填写服务器本地音频路径(与上传二选一)", lines=1)
                     with gr.Column():
                         vid = gr.Textbox(label="音色ID(调用时用的名字,如 xiaoming)", lines=1)
                         ptext = gr.Textbox(label="参考音频逐字转写(强烈建议填写)", lines=2)
@@ -1445,9 +1444,9 @@ def build_ui():
             gr.Markdown(CALL_DOC)
 
         # ==================== 事件绑定(克隆) ====================
-        reg_btn.click(ui_register, [vid, up, srv, ptext, plang, note], [reg_out, t_voice])
+        reg_btn.click(ui_register, [vid, up, ptext, plang, note], [reg_out, t_voice])
         up.upload(ui_check_upload, [up], [up_status, up])
-        asr_btn.click(ui_autotranscribe, [up, srv], [ptext, plang, reg_out])
+        asr_btn.click(ui_autotranscribe, [up], [ptext, plang, reg_out])
         refresh_btn.click(lambda: (ui_list(), gr.update(choices=[r[0] for r in ui_list()])),
                           None, [lst, pick])
         pick.change(ui_pick_full, [pick], [play, e_prompt, e_lang, e_newid, e_note])
