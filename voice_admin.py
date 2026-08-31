@@ -1144,7 +1144,7 @@ def ui_set_global_mode(mode):
     """全局模式开关: 克隆=切回 base; 专属=启用最近注册的微调模型包(当前已是微调模型则保持)。
     需要精确指定模型时, 用「模型包管理」页的启用按钮。即时热切换。"""
     reg = load_reg()
-    ft = [m["id"] for m in reg["models"].values()]
+    ft = list(reg["models"].keys())
     target = "base"
     if mode != "clone":
         if reg["settings"].get("active_model", "base") in reg["models"]:
