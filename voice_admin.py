@@ -1259,7 +1259,7 @@ def build_ui():
         with gr.Row(variant="panel"):
             with gr.Column(scale=1):
                 g_mode = gr.Radio(
-                    choices=[("🔵 克隆模式", "clone"), ("🟣 专属模式", "ftuned")],
+                    choices=[("克隆模式", "clone"), ("专属模式", "ftuned")],
                     value=("clone" if active0 == "base" else "ftuned"),
                     label="全局工作模式(点选即切换引擎模型)")
             with gr.Column(scale=2):
@@ -1486,7 +1486,7 @@ def build_ui():
             show_clone = fv == "base" or not ft_ids
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
                     ui_m_list(), gr.update(choices=ft_ids), gr.update(choices=ft_ids, value=fv),
-                    gr.update(choices=[("🔵 克隆模式", "clone"), ("🟣 专属模式", "ftuned")],
+                    gr.update(choices=[("克隆模式", "clone"), ("专属模式", "ftuned")],
                               value=("clone" if show_clone else "ftuned")),
                     ui_active_model(),
                     gr.update(visible=show_clone), gr.update(visible=not show_clone))
