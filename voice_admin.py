@@ -1486,24 +1486,14 @@ def build_ui():
             show_clone = fv == "base" or not ft_ids
             return (ui_list(), _voice_choices_with_default(), _voice_choices_with_default(),
                     ui_m_list(), gr.update(choices=ft_ids), gr.update(choices=ft_ids, value=fv),
-                    gr.update(choices=["clone", "ftuned"], value=("clone" if show_clone else "ftuned")),
+                    gr.update(choices=[("🔵 克隆模式", "clone"), ("🟣 专属模式", "ftuned")],
+                              value=("clone" if show_clone else "ftuned")),
                     ui_active_model(),
                     gr.update(visible=show_clone), gr.update(visible=not show_clone))
         demo.load(_load_all, None, [lst, pick, t_voice, m_tbl, m_pick, f_model,
                                     g_mode, g_status, tab_clone, tab_ftuned])
 
         # ==================== 全局模式事件绑定(组件均已定义) ====================
-        def _apply_mode_ui(mode):
-            """点应用后: 按模式隐藏另一栏目, 并回填全局控件状态。"""
-            show_clone = mode == "clone"
-            active = load_reg()["settings"].get("active_model", "base")
-            mids = _mids_choices()
-            return (gr.update(visible=show_clone),
-                    gr.update(visible=not show_clone),
-                    gr.update(choices=["clone", "ftuned"], value=mode),
-                    gr.update(choices=mids, value=active),
-                    ui_active_model())
-
         def _global_mode_click(mode):
             """点选模式即热切换引擎 + 隐藏另一栏目。返回 5 值严格对应 5 个输出。
             注意: 模型包下拉一律排除 base(base 属于克隆模式, 不属于模型包)。"""
