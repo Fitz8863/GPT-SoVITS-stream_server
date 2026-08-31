@@ -1505,14 +1505,16 @@ def build_ui():
                     ui_active_model())
 
         def _global_mode_click(mode):
-            """点选模式即热切换引擎 + 隐藏另一栏目。返回 5 值严格对应 5 个输出。"""
+            """点选模式即热切换引擎 + 隐藏另一栏目。返回 5 值严格对应 5 个输出。
+            注意: 模型包下拉一律排除 base(base 属于克隆模式, 不属于模型包)。"""
             msg, _, _, _ = ui_set_global_mode(mode)
             active = load_reg()["settings"].get("active_model", "base")
-            mids = _mids_choices()
+            ft_ids = [m["id"] for m in list_models() if m["id"] != "base"]
+            sel = active if active in ft_ids else None
             show_clone = mode == "clone"
             return (msg,
-                    gr.update(choices=mids, value=active),   # m_pick(模型包管理)
-                    gr.update(choices=mids, value=active),   # f_model(专属试音)
+                    gr.update(choices=ft_ids, value=sel),    # m_pick(模型包管理)
+                    gr.update(choices=ft_ids, value=sel),    # f_model(专属试音)
                     gr.update(visible=show_clone),           # tab_clone
                     gr.update(visible=not show_clone))       # tab_ftuned
 
