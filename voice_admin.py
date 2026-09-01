@@ -989,16 +989,18 @@ def _voice_choices_with_default():
 # ---------------- 管理界面(gradio, 挂载在 /ui) ----------------
 
 def ui_check_upload(fpath):
-    """上传即校验时长: 不在 3~10s 内直接报错并清空, 不允许进入注册流程。"""
+    """上传即校验时长: 不在 3~10s 内直接报错, 不允许进入注册流程(注册时还会再校验一遍)。
+    注意: 输出只接 up_status, 不能把 up 组件放进输出——曾因成功路径返回 None 导致
+    上传成功的同时文件值被清空, ASR/注册全部拿到空值。"""
     if not fpath:
-        return "", None
+        return ""
     try:
         dur = sf.info(str(fpath)).duration
     except Exception as e:
         raise gr.Error(f"无法读取音频文件: {e}")
     if dur < 3 or dur > 10:
         raise gr.Error(f"❌ 语音时长 {dur:.1f} 秒,要求 3~10 秒(引擎硬性限制),请裁剪后重新上传")
-    return f"✓ 音频时长 {dur:.1f}s,符合 3~10s 要求", None
+    return f"✓ 音频时长 {dur:.1f}s,符合 3~10s 要求"
 
 
 def ui_register(voice_id, upload, prompt_text, prompt_lang, note):
@@ -1466,7 +1468,7 @@ def build_ui():
 
         # ==================== 事件绑定(克隆) ====================
         reg_btn.click(ui_register, [vid, up, ptext, plang, note], [reg_out, t_voice])
-        up.upload(ui_check_upload, [up], [up_status, up])
+        up.upload(ui_check_upload, [up], [up_status])
         asr_btn.click(ui_autotranscribe, [up], [ptext, plang, reg_out])
         refresh_btn.click(lambda: (ui_list(), gr.update(choices=[r[0] for r in ui_list()])),
                           None, [lst, pick])
